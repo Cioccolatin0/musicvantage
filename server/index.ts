@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cookieParser from "cookie-parser";
 import { createServer, get as httpGet } from "http";
-import { get as httpsGet } from "https";
+import { get as httpsGet, request as httpsRequest } from "https";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
@@ -33,6 +33,13 @@ try {
       if (fs.existsSync(alt)) { YT_DLP_PATH = alt; }
     }
   } catch {}
+  // Linux fallback: try python3 -m yt_dlp
+  if (YT_DLP_PATH === "yt-dlp") {
+    try {
+      execFileSync("python3", ["-m", "yt_dlp", "--version"], { timeout: 5000, stdio: "ignore" });
+      YT_DLP_PATH = "PYTHON_YT_DLP";
+    } catch {}
+  }
 }
 const PYTHON_SCRIPT = path.join(__dirname, "../ytmusic_api.py");
 
@@ -99,33 +106,35 @@ async function startServer() {
     }
 
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: { "User-Agent": "Mozilla/5.0" },
-      });
-      clearTimeout(timeout);
-
-      if (!response.ok || !response.body) {
-        res.status(response.status).json({ error: "Failed to fetch image" });
-        return;
-      }
-
-      const contentType = response.headers.get("content-type") || "image/jpeg";
-
-      const chunks: Buffer[] = [];
-      const reader = response.body.getReader();
-      const pump = (): Promise<void> =>
-        reader.read().then(({ done, value }) => {
-          if (done) return Promise.resolve();
-          chunks.push(Buffer.from(value));
-          return pump();
+      const getClient = url.startsWith("https") ? httpsGet : httpGet;
+      const data = await new Promise<Buffer>((resolve, reject) => {
+        const req = getClient(url, { headers: { "User-Agent": "Mozilla/5.0" } }, (upstream) => {
+          if (upstream.statusCode && upstream.statusCode >= 300 && upstream.statusCode < 400 && upstream.headers.location) {
+            const redirectUrl = upstream.headers.location;
+            const redirectGet = redirectUrl.startsWith("https") ? httpsGet : httpGet;
+            redirectGet(redirectUrl, (redirectRes) => {
+              const chunks: Buffer[] = [];
+              redirectRes.on("data", (d: Buffer) => chunks.push(d));
+              redirectRes.on("end", () => resolve(Buffer.concat(chunks)));
+              redirectRes.on("error", reject);
+            }).on("error", reject);
+            return;
+          }
+          if (!upstream.statusCode || upstream.statusCode < 200 || upstream.statusCode >= 300) {
+            reject(new Error(`HTTP ${upstream.statusCode}`));
+            return;
+          }
+          const chunks: Buffer[] = [];
+          upstream.on("data", (d: Buffer) => chunks.push(d));
+          upstream.on("end", () => resolve(Buffer.concat(chunks)));
+          upstream.on("error", reject);
         });
-      await pump();
-      const buf = Buffer.concat(chunks);
+        req.on("error", reject);
+        setTimeout(() => { req.destroy(); reject(new Error("timeout")); }, 10000);
+      });
 
-      imageCache.set(url, { buf, ct: contentType, expires: Date.now() + IMAGE_CACHE_TTL });
+      const contentType = "image/jpeg";
+      imageCache.set(url, { buf: data, ct: contentType, expires: Date.now() + IMAGE_CACHE_TTL });
       if (imageCache.size > 2000) {
         const oldest = imageCache.keys().next().value;
         if (oldest) imageCache.delete(oldest);
@@ -134,7 +143,7 @@ async function startServer() {
       res.setHeader("Content-Type", contentType);
       res.setHeader("Cache-Control", "public, max-age=86400");
       res.setHeader("Access-Control-Allow-Origin", "*");
-      res.end(buf);
+      res.end(data);
     } catch (err) {
       res.status(500).json({ error: "Proxy error" });
     }
@@ -216,13 +225,14 @@ async function startServer() {
     for (const fmt of formatOpts) {
       try {
         const url = await new Promise<string>((resolve, reject) => {
-          const proc = spawn(YT_DLP_PATH, [
-            "--no-warnings", "--no-playlist",
-            "--no-progress", "--quiet",
-            "-f", fmt,
-            "--get-url",
-            `https://www.youtube.com/watch?v=${videoId}`,
-          ]);
+          const args = YT_DLP_PATH === "PYTHON_YT_DLP"
+            ? ["-m", "yt_dlp", "--no-warnings", "--no-playlist", "--no-progress", "--quiet", "-f", fmt, "--get-url", `https://www.youtube.com/watch?v=${videoId}`]
+            : ["--no-warnings", "--no-playlist", "--no-progress", "--quiet", "-f", fmt, "--get-url", `https://www.youtube.com/watch?v=${videoId}`];
+          const bin = YT_DLP_PATH === "PYTHON_YT_DLP" ? "python3" : YT_DLP_PATH;
+          const proc = spawn(bin, args, {
+            timeout: 15000,
+            env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+          });
           let stdout = "";
           let stderr = "";
           proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
@@ -305,6 +315,14 @@ async function startServer() {
       const url = await resolveAudioUrl(videoId);
       res.json({ url });
     } catch (err) {
+      // Fallback: try python worker
+      try {
+        const result = await callPythonWorker("audio_url", { videoId }, 0) as { url: string };
+        if (result?.url) {
+          res.json(result);
+          return;
+        }
+      } catch {}
       res.status(502).json({ error: "Failed to resolve audio URL" });
     }
   });
@@ -332,7 +350,7 @@ async function startServer() {
     try {
       const result = await new Promise<{ url: string; videoId: string }>((resolve, reject) => {
         const proc = spawn(
-          "python",
+          "python3",
           [PYTHON_SCRIPT, "audio_url", JSON.stringify({ videoId })],
           { timeout: 45000, env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" } }
         );
