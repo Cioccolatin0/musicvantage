@@ -1,0 +1,28 @@
+{
+    "description":  "MusicVantage - Ascolta musica in streaming ovunque",
+    "short_name":  "MusicVantage",
+    "icons":  [
+                  {
+                      "purpose":  "any maskable",
+                      "type":  "image/png",
+                      "sizes":  "192x192",
+                      "src":  "/icons/midnight-192.png"
+                  },
+                  {
+                      "purpose":  "any maskable",
+                      "type":  "image/png",
+                      "sizes":  "512x512",
+                      "src":  "/icons/midnight-512.png"
+                  }
+              ],
+    "theme_color":  "#1db954",
+    "display":  "standalone",
+    "name":  "MusicVantage",
+    "categories":  [
+                       "music",
+                       "entertainment"
+                   ],
+    "background_color":  "#0a0a0a",
+    "start_url":  "/",
+    "orientation":  "any"
+}

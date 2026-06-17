@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.env
+*.log
+__pycache__
+.search_cache.json
+local-beta-db.json
+invite_codes.json
+users.json
+vapid-keys.json
+deploy

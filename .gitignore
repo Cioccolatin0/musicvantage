@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+*.log
+*.log.*
+log
+logs/
+search_cache.json
+.search_cache.json
+invite_codes.json
+users.json
+vapid-keys.json
+local-beta-db.json
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
