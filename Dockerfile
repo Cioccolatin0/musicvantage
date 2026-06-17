@@ -4,4 +4,4 @@ COPY package*.json ./
 RUN npm install
 COPY . .
 RUN npx vite build
-CMD ["node", "server/index.js"]
+CMD ["npx", "tsx", "server/index.ts"]
