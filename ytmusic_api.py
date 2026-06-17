@@ -709,11 +709,13 @@ def _spotify_fetch_via_ytdlp(playlist_id: str):
     """Fetch all tracks from Spotify using yt-dlp as fallback."""
     try:
         url = f"https://open.spotify.com/playlist/{playlist_id}"
+        print(f"[Spotify yt-dlp] Running: {' '.join(YT_DLP_CMD)} --flat-playlist ... {url}", file=sys.stderr)
         result = subprocess.run(
             YT_DLP_CMD + ["--flat-playlist", "--dump-json", "--skip-download", "--no-warnings", url],
             capture_output=True, text=True, timeout=300
         )
         if result.returncode != 0:
+            print(f"[Spotify yt-dlp] Failed (code {result.returncode}): {result.stderr[:300]}", file=sys.stderr)
             return None
         raw = []
         for line in result.stdout.strip().split('\n'):
@@ -762,6 +764,7 @@ def _spotify_fetch_tracks(playlist_id: str, max_retries: int = 3):
     Returns (tracks_or_None, error_or_None, playlist_name, playlist_thumb)."""
     embed_tracks, token, embed_total, playlist_name, playlist_thumb = _spotify_parse_embed_page(playlist_id)
     total_known = embed_total or 0
+    print(f"[Spotify] Embed page: tracks={len(embed_tracks) if embed_tracks else 0}, token={'yes' if token else 'no'}, total={total_known}", file=sys.stderr)
 
     # Normalize embed tracks early
     all_tracks = _spotify_normalize_tracks(embed_tracks)
@@ -874,24 +877,33 @@ def _spotify_fetch_tracks(playlist_id: str, max_retries: int = 3):
         return all_tracks, None, playlist_name, playlist_thumb
 
     # Fallback: use yt-dlp when embed+API couldn't fetch all tracks
+    print(f"[Spotify] Trying yt-dlp fallback (got {len(all_tracks)} tracks so far)...", file=sys.stderr)
     yt_tracks = _spotify_fetch_via_ytdlp(playlist_id)
     if yt_tracks:
+        print(f"[Spotify] yt-dlp returned {len(yt_tracks)} tracks", file=sys.stderr)
         return yt_tracks, None, playlist_name, playlist_thumb
 
     # Return whatever we got from embed/API
     if all_tracks:
         return all_tracks, None, playlist_name, playlist_thumb
-    return None, "Impossibile ottenere i brani della playlist Spotify.", "", ""
+    return None, "Impossibile ottenere i brani della playlist Spotify. L'embed page potrebbe aver cambiato struttura o yt-dlp non è installato.", "", ""
 
 def import_spotify_playlist(url: str):
     m = re.search(r'playlist[/=]([a-zA-Z0-9]+)', url)
     if not m:
-        return {"error": "URL Spotify non valido."}
+        return {"error": "URL Spotify non valido. Assicurati che il link contenga '/playlist/' seguito dall'ID."}
     playlist_id = m.group(1)
+    if len(playlist_id) < 5:
+        return {"error": f"ID playlist troppo corto ('{playlist_id}'). Il link potrebbe essere troncato. Incolla l'intero URL."}
 
+    print(f"[Spotify Import] Starting import for playlist_id={playlist_id}", file=sys.stderr)
     raw_tracks, err, pl_name, pl_thumb = _spotify_fetch_tracks(playlist_id)
     if err:
+        print(f"[Spotify Import] Fetch failed: {err}", file=sys.stderr)
         return {"error": err}
+    if not raw_tracks:
+        return {"error": "La playlist è vuota o non è stato possibile leggerne i brani."}
+    print(f"[Spotify Import] Fetched {len(raw_tracks)} tracks from Spotify, searching on YouTube Music...", file=sys.stderr)
 
     yt = get_yt()
     pool = _get_pool()
@@ -975,6 +987,11 @@ def import_playlist(url: str):
 
     # Use embedded anonymous token for Spotify (no login required)
     if platform == "spotify":
+        # Pre-check yt-dlp availability since it's the fallback for Spotify
+        try:
+            subprocess.run(YT_DLP_CMD + ["--version"], capture_output=True, timeout=5)
+        except FileNotFoundError:
+            print("[Spotify] WARNING: yt-dlp not found. Fallback will not work if embed page fails.", file=sys.stderr)
         return import_spotify_playlist(url)
 
     try:

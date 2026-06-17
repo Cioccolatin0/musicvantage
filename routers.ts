@@ -127,6 +127,20 @@ export const appRouter = router({
   system: systemRouter,
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user ?? null),
+
+    // Return the first unused invite code when no users exist (first-run setup)
+    defaultInvite: publicProcedure.query(async () => {
+      try {
+        const users = await localAuth.getUsers?.() ?? [];
+        if (users.length > 0) return { code: null };
+        const codes = await localAuth.getInviteCodes();
+        const unused = codes.find((c) => !c.usedBy);
+        return { code: unused?.code ?? null };
+      } catch {
+        return { code: null };
+      }
+    }),
+
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });

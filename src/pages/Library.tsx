@@ -482,6 +482,7 @@ function ImportPlaylistDialog({ onImported }: { onImported: () => void }) {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "saving" | "done" | "error">("idle");
   const [result, setResult] = useState<{ tracks: any[]; errors: string[]; total: number; found: number; playlistName?: string } | null>(null);
+  const [customError, setCustomError] = useState<string | null>(null);
   const addTracksBatch = trpc.library.addTracksToPlaylist.useMutation();
   const createPl = trpc.library.createPlaylist.useMutation();
   const importMutation = trpc.music.importPlaylist.useMutation({
@@ -516,21 +517,34 @@ function ImportPlaylistDialog({ onImported }: { onImported: () => void }) {
           setUrl("");
           setStatus("idle");
           setResult(null);
+          setCustomError(null);
           onImported();
         } catch {
           setStatus("error");
         }
       } else {
+        const backendErrors = data?.errors;
+        const total = data?.total || 0;
+        const detail = total > 0 && backendErrors?.length > 0
+          ? `Trovati ${total} brani nella playlist, ma nessuno è stato trovato su YouTube Music.`
+          : total > 0
+          ? `La playlist contiene ${total} brani ma non è stato possibile recuperarli da Spotify.`
+          : "Non è stato possibile recuperare i brani. Verifica che il link sia pubblico e valido.";
+        setCustomError(detail);
         setStatus("error");
       }
     },
-    onError: () => { setStatus("error"); },
+    onError: (err: any) => {
+      setCustomError(err?.message || "Errore durante l'importazione. Verifica il link.");
+      setStatus("error");
+    },
   });
 
   const handleImport = () => {
     if (!url.trim()) return;
     setStatus("loading");
     setResult(null);
+    setCustomError(null);
     importMutation.mutate({ url: url.trim() });
   };
 
@@ -543,7 +557,7 @@ function ImportPlaylistDialog({ onImported }: { onImported: () => void }) {
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setUrl(""); setStatus("idle"); setResult(null); } }}>
+    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setUrl(""); setStatus("idle"); setResult(null); setCustomError(null); } }}>
       <DialogTrigger asChild>
         <Button className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 border border-border/50 text-foreground hover:border-spotify-green/50 hover:text-spotify-green">
           <Link className="w-4 h-4" />
@@ -610,7 +624,7 @@ function ImportPlaylistDialog({ onImported }: { onImported: () => void }) {
           {status === "error" && (
             <div className="flex items-start gap-2.5 p-3 rounded-xl bg-destructive/10 text-destructive text-sm">
               <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" strokeWidth={2} />
-              <span>{importMutation.error?.message || "Errore durante l'importazione. Verifica il link."}</span>
+              <span>{customError || importMutation.error?.message || "Errore durante l'importazione. Verifica il link."}</span>
             </div>
           )}
 

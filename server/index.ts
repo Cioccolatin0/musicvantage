@@ -70,6 +70,11 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   app.use(cookieParser());
 
+  // Health check endpoint (for keep-alive pings)
+  app.get("/health", (_req, res) => {
+    res.status(200).json({ status: "ok", uptime: process.uptime() });
+  });
+
   registerStorageProxy(app);
   registerOAuthRoutes(app);
 
@@ -417,7 +422,7 @@ async function startServer() {
   });
 
   if (process.env.NODE_ENV === "development") {
-    await setupVite(app, server);
+    await setupVite(app, server, port);
   } else {
     serveStatic(app);
   }

@@ -1,0 +1,17 @@
+node_modules
+dist
+.git
+.github
+.env
+.env.*
+logs
+*.log
+Dockerfile
+Dockerfile.hf
+docker-compose.yml
+deploy
+README.md
+README.hf.md
+local-beta-db.json
+.vscode
+.idea

@@ -7,10 +7,10 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export async function setupVite(app: Express, server: Server) {
+export async function setupVite(app: Express, server: Server, port: number) {
   const { createServer: createViteServer } = await import("vite");
   const vite = await createViteServer({
-    server: { middlewareMode: true, hmr: { server, clientPort: 3000 } },
+    server: { middlewareMode: true, hmr: { server, clientPort: port } },
     appType: "custom",
     legacy: { skipWebSocketTokenCheck: true },
   });
