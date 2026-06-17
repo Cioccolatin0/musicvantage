@@ -18,6 +18,82 @@ export async function getDb() {
   return _db;
 }
 
+const CREATE_TABLES_SQL = `
+CREATE TABLE IF NOT EXISTS "users" (
+  "id" serial PRIMARY KEY,
+  "openId" varchar(64) NOT NULL UNIQUE,
+  "name" text,
+  "email" varchar(320),
+  "loginMethod" varchar(64),
+  "role" varchar(16) NOT NULL DEFAULT 'user',
+  "createdAt" timestamp NOT NULL DEFAULT now(),
+  "updatedAt" timestamp NOT NULL DEFAULT now(),
+  "lastSignedIn" timestamp NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS "playlists" (
+  "id" serial PRIMARY KEY,
+  "userId" integer NOT NULL,
+  "name" text NOT NULL,
+  "description" text,
+  "thumbnail" text,
+  "isPublic" integer NOT NULL DEFAULT 0,
+  "createdAt" timestamp NOT NULL DEFAULT now(),
+  "updatedAt" timestamp NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS "playlistTracks" (
+  "id" serial PRIMARY KEY,
+  "playlistId" integer NOT NULL,
+  "trackId" varchar(255) NOT NULL,
+  "trackTitle" text,
+  "trackArtist" text,
+  "trackAlbum" text,
+  "trackThumbnail" text,
+  "trackDuration" integer,
+  "addedAt" timestamp NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS "favorites" (
+  "id" serial PRIMARY KEY,
+  "userId" integer NOT NULL,
+  "trackId" varchar(255) NOT NULL,
+  "trackTitle" text,
+  "trackArtist" text,
+  "trackThumbnail" text,
+  "trackDuration" integer,
+  "addedAt" timestamp NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS "listeningHistory" (
+  "id" serial PRIMARY KEY,
+  "userId" integer NOT NULL,
+  "trackId" varchar(255) NOT NULL,
+  "trackTitle" text,
+  "trackArtist" text,
+  "trackThumbnail" text,
+  "trackDuration" integer,
+  "playedAt" timestamp NOT NULL DEFAULT now()
+);
+`;
+
+export async function ensureTables(): Promise<void> {
+  if (!process.env.DATABASE_URL) {
+    console.warn("[Database] Cannot create tables: DATABASE_URL not set");
+    return;
+  }
+
+  try {
+    const { Pool } = await import("pg");
+    const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    await pool.query(CREATE_TABLES_SQL);
+    await pool.end();
+    console.log("[Database] Tables ensured (PostgreSQL)");
+  } catch (error) {
+    console.error("[Database] Failed to create tables:", error);
+  }
+}
+
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) {
     throw new Error("User openId is required for upsert");

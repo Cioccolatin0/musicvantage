@@ -1,10 +1,20 @@
-import { spawn, ChildProcess } from "child_process";
+import { spawn, ChildProcess, execFileSync } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createInterface } from "readline";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PYTHON_SCRIPT = path.join(__dirname, "../ytmusic_api.py");
+
+let PYTHON_BIN = "python3";
+try {
+  execFileSync("python3", ["--version"], { timeout: 3000, stdio: "ignore" });
+} catch {
+  try {
+    execFileSync("python", ["--version"], { timeout: 3000, stdio: "ignore" });
+    PYTHON_BIN = "python";
+  } catch {}
+}
 
 let _proc: ChildProcess | null = null;
 let _queue: Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
@@ -17,7 +27,7 @@ function startWorker(): Promise<void> {
   if (_proc) return Promise.resolve();
 
   return new Promise((resolve, reject) => {
-    _proc = spawn("python", [PYTHON_SCRIPT, "--worker"], {
+    _proc = spawn(PYTHON_BIN, [PYTHON_SCRIPT, "--worker"], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
     });
@@ -62,11 +72,11 @@ function startWorker(): Promise<void> {
       console.error(`[Python Worker] Exited with code ${code}. Restarting...`);
       _proc = null;
       _warmed = false;
+      _startupPromise = null;
       for (const [, handler] of _queue) {
         handler.reject(new Error("Python worker process died"));
       }
       _queue.clear();
-      setTimeout(() => startWorker(), 1000);
     });
 
     _proc.on("error", (err) => {
@@ -97,7 +107,9 @@ export function ensureWorker(): Promise<void> {
       resolve();
     },
   });
-  _proc!.stdin!.write(JSON.stringify({ id: pingId, action: "ping", args: {} }) + "\n");
+  if (_proc?.stdin) {
+    _proc.stdin.write(JSON.stringify({ id: pingId, action: "ping", args: {} }) + "\n");
+  }
       // Give the worker a short time to warm up and respond. If it doesn't
       // respond within 2s we still resolve (worker will continue to warm in
       // background) but we mark as warmed so the server doesn't block UI.
@@ -125,6 +137,11 @@ export async function callPythonWorker(
 
   await ensureWorker();
 
+  if (!_proc?.stdin) {
+    _startupPromise = null;
+    await ensureWorker();
+  }
+
   const timeoutMs = action === "import_playlist" ? 1800000 : action === "audio_url" ? 180000 : 60000;
   const promise = new Promise((resolve, reject) => {
     const id = ++_nextId;
@@ -148,7 +165,14 @@ export async function callPythonWorker(
     });
 
     try {
-      _proc!.stdin!.write(JSON.stringify({ id, action, args }) + "\n");
+      if (!_proc?.stdin) {
+        _queue.delete(id);
+        _inflight.delete(cacheKey);
+        clearTimeout(timer);
+        reject(new Error("Python worker not running"));
+        return;
+      }
+      _proc.stdin.write(JSON.stringify({ id, action, args }) + "\n");
     } catch (err) {
       _queue.delete(id);
       _inflight.delete(cacheKey);

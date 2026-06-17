@@ -13,6 +13,7 @@ import { serveStatic, setupVite } from "./vite";
 import * as localAuth from "./_core/localAuth";
 import { ensureWorker, callPythonWorker } from "./python-worker";
 import { setupWebSocket } from "./ws";
+import { ensureTables } from "../db";
 import { spawn, execFileSync } from "child_process";
 import path from "path";
 import fs from "fs";
@@ -408,6 +409,10 @@ async function startServer() {
   if (port !== preferredPort) {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   }
+
+  await ensureTables().catch((err) => {
+    console.error("[Database] Table creation failed:", err.message);
+  });
 
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
