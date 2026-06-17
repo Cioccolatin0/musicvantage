@@ -47,9 +47,9 @@ export async function getUsers(): Promise<StoredUser[]> {
       id: r.id,
       email: r.email,
       name: r.name,
-      passwordHash: r.passwordHash,
+      passwordHash: r.password_hash,
       salt: r.salt,
-      createdAt: r.createdAt?.toISOString?.() || r.createdAt,
+      createdAt: r.created_at?.toISOString?.() || r.created_at,
     }));
   } catch (error) {
     console.error("[localAuth] Failed to get users:", error);
@@ -64,11 +64,11 @@ export async function getInviteCodes(): Promise<InviteCode[]> {
     const result = await pool.query('SELECT * FROM "inviteCodes" ORDER BY id');
     return result.rows.map((r) => ({
       code: r.code,
-      usedBy: r.usedBy || undefined,
-      usedAt: r.usedAt?.toISOString?.() || r.usedAt || undefined,
-      createdBy: r.createdBy,
-      createdAt: r.createdAt?.toISOString?.() || r.createdAt,
-      expiresAt: r.expiresAt?.toISOString?.() || r.expiresAt || undefined,
+      usedBy: r.used_by || undefined,
+      usedAt: r.used_at?.toISOString?.() || r.used_at || undefined,
+      createdBy: r.created_by,
+      createdAt: r.created_at?.toISOString?.() || r.created_at,
+      expiresAt: r.expires_at?.toISOString?.() || r.expires_at || undefined,
     }));
   } catch (error) {
     console.error("[localAuth] Failed to get invite codes:", error);
@@ -87,9 +87,9 @@ export async function findUserByEmail(email: string): Promise<StoredUser | undef
       id: r.id,
       email: r.email,
       name: r.name,
-      passwordHash: r.passwordHash,
+      passwordHash: r.password_hash,
       salt: r.salt,
-      createdAt: r.createdAt?.toISOString?.() || r.createdAt,
+      createdAt: r.created_at?.toISOString?.() || r.created_at,
     };
   } catch (error) {
     console.error("[localAuth] Failed to find user by email:", error);
@@ -108,9 +108,9 @@ export async function findUserById(id: number): Promise<StoredUser | undefined> 
       id: r.id,
       email: r.email,
       name: r.name,
-      passwordHash: r.passwordHash,
+      passwordHash: r.password_hash,
       salt: r.salt,
-      createdAt: r.createdAt?.toISOString?.() || r.createdAt,
+      createdAt: r.created_at?.toISOString?.() || r.created_at,
     };
   } catch (error) {
     console.error("[localAuth] Failed to find user by id:", error);
@@ -141,7 +141,7 @@ export async function registerUser(email: string, name: string, password: string
   const { hash, salt } = hashPassword(password);
 
   const result = await pool.query(
-    'INSERT INTO "localUsers" (email, name, passwordHash, salt) VALUES ($1, $2, $3, $4) RETURNING id, email, name, createdAt',
+    'INSERT INTO "localUsers" (email, name, password_hash, salt) VALUES ($1, $2, $3, $4) RETURNING id, email, name, created_at',
     [email, name, hash, salt]
   );
 
@@ -152,11 +152,11 @@ export async function registerUser(email: string, name: string, password: string
     name: row.name,
     passwordHash: hash,
     salt,
-    createdAt: row.createdAt?.toISOString?.() || row.createdAt,
+    createdAt: row.created_at?.toISOString?.() || row.created_at,
   };
 
   await pool.query(
-    'UPDATE "inviteCodes" SET "usedBy" = $1, "usedAt" = now() WHERE code = $2',
+    'UPDATE "inviteCodes" SET used_by = $1, used_at = now() WHERE code = $2',
     [email, inviteCode]
   );
 
@@ -202,7 +202,7 @@ export async function generateInviteCode(createdBy: string, expiresInDays?: numb
   }
 
   await pool.query(
-    'INSERT INTO "inviteCodes" (code, "createdBy", "expiresAt") VALUES ($1, $2, $3)',
+    'INSERT INTO "inviteCodes" (code, created_by, expires_at) VALUES ($1, $2, $3)',
     [code, createdBy, expiresAt]
   );
 
