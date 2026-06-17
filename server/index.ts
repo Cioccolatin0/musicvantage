@@ -437,12 +437,25 @@ async function startServer() {
 
     try {
       const codes = await localAuth.getInviteCodes();
+      console.log(`[Auth] Found ${codes.length} invite code(s) in database`);
       if (codes.length === 0) {
         const code = await localAuth.generateInviteCode("system", 90);
-        console.log(`\n  Default invite code for registration: ${code.code}\n`);
+        console.log(`\n  ====================================`);
+        console.log(`  Default invite code: ${code.code}`);
+        console.log(`  ====================================\n`);
+      } else {
+        const unused = codes.filter(c => !c.usedBy);
+        if (unused.length > 0) {
+          console.log(`\n  Available invite code(s):`);
+          unused.forEach(c => console.log(`    - ${c.code}`));
+          console.log(``);
+        } else {
+          console.log(`\n  All invite codes used. Generate a new one from Admin panel.\n`);
+        }
       }
     } catch (err) {
       console.error("[Auth] Failed to check/generate invite codes:", (err as Error).message);
+      console.error("[Auth] Stack:", (err as Error).stack);
     }
 
     ensureWorker().then(() => {
