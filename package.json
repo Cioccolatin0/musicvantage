@@ -7,7 +7,7 @@
     "dev": "npm run dev:server",
     "dev:server": "tsx watch server/index.ts",
     "dev:client": "vite",
-    "build": "tsc && vite build",
+    "build": "vite build",
     "start": "npx tsx server/index.ts",
     "lint": "tsc --noEmit"
   },
