@@ -137,8 +137,8 @@ export const appRouter = router({
     // Validate invite code
     validateInvite: publicProcedure
       .input(z.object({ code: z.string() }))
-      .query(({ input }) => {
-        return localAuth.validateInviteCode(input.code);
+      .query(async ({ input }) => {
+        return await localAuth.validateInviteCode(input.code);
       }),
 
     // Register with invite code
@@ -149,8 +149,8 @@ export const appRouter = router({
         password: z.string().min(6).max(100),
         inviteCode: z.string(),
       }))
-      .mutation(({ ctx, input }) => {
-        const user = localAuth.registerUser(input.email, input.name, input.password, input.inviteCode);
+      .mutation(async ({ ctx, input }) => {
+        const user = await localAuth.registerUser(input.email, input.name, input.password, input.inviteCode);
         const sessionToken = crypto
           .createHmac("sha256", process.env.SESSION_SECRET || "dev-secret")
           .update(`${user.email}:${Date.now()}`)
@@ -171,8 +171,8 @@ export const appRouter = router({
         email: z.string().email(),
         password: z.string(),
       }))
-      .mutation(({ ctx, input }) => {
-        const user = localAuth.loginUser(input.email, input.password);
+      .mutation(async ({ ctx, input }) => {
+        const user = await localAuth.loginUser(input.email, input.password);
         const sessionToken = crypto
           .createHmac("sha256", process.env.SESSION_SECRET || "dev-secret")
           .update(`${user.email}:${Date.now()}`)
@@ -192,16 +192,16 @@ export const appRouter = router({
       .input(z.object({
         expiresInDays: z.number().min(1).max(365).optional().default(30),
       }))
-      .mutation(({ ctx, input }) => {
+      .mutation(async ({ ctx, input }) => {
         const userEmail = ctx.user?.email || ctx.user?.openId || "unknown";
-        const code = localAuth.generateInviteCode(userEmail, input.expiresInDays);
+        const code = await localAuth.generateInviteCode(userEmail, input.expiresInDays);
         return code;
       }),
 
     // List invite codes (protected)
     listInvites: protectedProcedure
-      .query(() => {
-        return localAuth.getInviteCodes();
+      .query(async () => {
+        return await localAuth.getInviteCodes();
       }),
   }),
 

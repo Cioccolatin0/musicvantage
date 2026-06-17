@@ -414,13 +414,17 @@ async function startServer() {
     console.error("[Database] Table creation failed:", err.message);
   });
 
-  server.listen(port, () => {
+  server.listen(port, async () => {
     console.log(`Server running on http://localhost:${port}/`);
 
-    const codes = localAuth.getInviteCodes();
-    if (codes.length === 0) {
-      const code = localAuth.generateInviteCode("system", 90);
-      console.log(`\n  Default invite code for registration: ${code.code}\n`);
+    try {
+      const codes = await localAuth.getInviteCodes();
+      if (codes.length === 0) {
+        const code = await localAuth.generateInviteCode("system", 90);
+        console.log(`\n  Default invite code for registration: ${code.code}\n`);
+      }
+    } catch (err) {
+      console.error("[Auth] Failed to check/generate invite codes:", (err as Error).message);
     }
 
     ensureWorker().then(() => {

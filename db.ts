@@ -75,6 +75,25 @@ CREATE TABLE IF NOT EXISTS "listeningHistory" (
   "trackDuration" integer,
   "playedAt" timestamp NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS "localUsers" (
+  "id" serial PRIMARY KEY,
+  "email" varchar(320) NOT NULL UNIQUE,
+  "name" text NOT NULL,
+  "passwordHash" text NOT NULL,
+  "salt" text NOT NULL,
+  "createdAt" timestamp NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS "inviteCodes" (
+  "id" serial PRIMARY KEY,
+  "code" varchar(32) NOT NULL UNIQUE,
+  "usedBy" varchar(320),
+  "usedAt" timestamp,
+  "createdBy" text NOT NULL,
+  "createdAt" timestamp NOT NULL DEFAULT now(),
+  "expiresAt" timestamp
+);
 `;
 
 export async function ensureTables(): Promise<void> {

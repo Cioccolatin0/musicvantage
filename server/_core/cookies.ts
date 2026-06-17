@@ -23,7 +23,7 @@ export async function getSessionFromCookie(req: Request) {
 
     // Local auth session (email-based)
     if (payload.email && payload.userId) {
-      const user = localAuth.getSessionUser(payload.email);
+      const user = await localAuth.getSessionUser(payload.email);
       if (!user) return undefined;
       return {
         id: payload.userId,

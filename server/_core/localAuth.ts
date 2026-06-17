@@ -1,11 +1,14 @@
 import crypto from "crypto";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+import { Pool } from "pg";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const INVITES_FILE = path.join(__dirname, "../../invite_codes.json");
-const USERS_FILE = path.join(__dirname, "../../users.json");
+let _pool: Pool | null = null;
+
+function getPool(): Pool | null {
+  if (_pool) return _pool;
+  if (!process.env.DATABASE_URL) return null;
+  _pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  return _pool;
+}
 
 type StoredUser = {
   id: number;
@@ -25,35 +28,6 @@ type InviteCode = {
   expiresAt?: string;
 };
 
-function readJson<T>(file: string, fallback: T): T {
-  try {
-    if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, "utf-8"));
-    }
-  } catch {}
-  return fallback;
-}
-
-function writeJson(file: string, data: unknown) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-}
-
-export function getUsers(): StoredUser[] {
-  return readJson<StoredUser[]>(USERS_FILE, []);
-}
-
-function saveUsers(users: StoredUser[]) {
-  writeJson(USERS_FILE, users);
-}
-
-export function getInviteCodes(): InviteCode[] {
-  return readJson<InviteCode[]>(INVITES_FILE, []);
-}
-
-function saveInviteCodes(codes: InviteCode[]) {
-  writeJson(INVITES_FILE, codes);
-}
-
 function hashPassword(password: string, salt?: string): { hash: string; salt: string } {
   const s = salt || crypto.randomBytes(16).toString("hex");
   const hash = crypto.scryptSync(password, s, 64).toString("hex");
@@ -64,16 +38,91 @@ function generateCode(): string {
   return crypto.randomBytes(4).toString("hex").toUpperCase();
 }
 
-export function findUserByEmail(email: string): StoredUser | undefined {
-  return getUsers().find((u) => u.email === email);
+export async function getUsers(): Promise<StoredUser[]> {
+  const pool = getPool();
+  if (!pool) return [];
+  try {
+    const result = await pool.query('SELECT * FROM "localUsers" ORDER BY id');
+    return result.rows.map((r) => ({
+      id: r.id,
+      email: r.email,
+      name: r.name,
+      passwordHash: r.passwordHash,
+      salt: r.salt,
+      createdAt: r.createdAt?.toISOString?.() || r.createdAt,
+    }));
+  } catch (error) {
+    console.error("[localAuth] Failed to get users:", error);
+    return [];
+  }
 }
 
-export function findUserById(id: number): StoredUser | undefined {
-  return getUsers().find((u) => u.id === id);
+export async function getInviteCodes(): Promise<InviteCode[]> {
+  const pool = getPool();
+  if (!pool) return [];
+  try {
+    const result = await pool.query('SELECT * FROM "inviteCodes" ORDER BY id');
+    return result.rows.map((r) => ({
+      code: r.code,
+      usedBy: r.usedBy || undefined,
+      usedAt: r.usedAt?.toISOString?.() || r.usedAt || undefined,
+      createdBy: r.createdBy,
+      createdAt: r.createdAt?.toISOString?.() || r.createdAt,
+      expiresAt: r.expiresAt?.toISOString?.() || r.expiresAt || undefined,
+    }));
+  } catch (error) {
+    console.error("[localAuth] Failed to get invite codes:", error);
+    return [];
+  }
 }
 
-export function registerUser(email: string, name: string, password: string, inviteCode: string): StoredUser {
-  const codes = getInviteCodes();
+export async function findUserByEmail(email: string): Promise<StoredUser | undefined> {
+  const pool = getPool();
+  if (!pool) return undefined;
+  try {
+    const result = await pool.query('SELECT * FROM "localUsers" WHERE email = $1 LIMIT 1', [email]);
+    if (result.rows.length === 0) return undefined;
+    const r = result.rows[0];
+    return {
+      id: r.id,
+      email: r.email,
+      name: r.name,
+      passwordHash: r.passwordHash,
+      salt: r.salt,
+      createdAt: r.createdAt?.toISOString?.() || r.createdAt,
+    };
+  } catch (error) {
+    console.error("[localAuth] Failed to find user by email:", error);
+    return undefined;
+  }
+}
+
+export async function findUserById(id: number): Promise<StoredUser | undefined> {
+  const pool = getPool();
+  if (!pool) return undefined;
+  try {
+    const result = await pool.query('SELECT * FROM "localUsers" WHERE id = $1 LIMIT 1', [id]);
+    if (result.rows.length === 0) return undefined;
+    const r = result.rows[0];
+    return {
+      id: r.id,
+      email: r.email,
+      name: r.name,
+      passwordHash: r.passwordHash,
+      salt: r.salt,
+      createdAt: r.createdAt?.toISOString?.() || r.createdAt,
+    };
+  } catch (error) {
+    console.error("[localAuth] Failed to find user by id:", error);
+    return undefined;
+  }
+}
+
+export async function registerUser(email: string, name: string, password: string, inviteCode: string): Promise<StoredUser> {
+  const pool = getPool();
+  if (!pool) throw new Error("Database non disponibile");
+
+  const codes = await getInviteCodes();
   const invite = codes.find((c) => c.code === inviteCode && !c.usedBy);
 
   if (!invite) {
@@ -84,35 +133,38 @@ export function registerUser(email: string, name: string, password: string, invi
     throw new Error("Codice invito scaduto");
   }
 
-  if (findUserByEmail(email)) {
+  const existing = await findUserByEmail(email);
+  if (existing) {
     throw new Error("Email già registrata");
   }
 
-  const users = getUsers();
-  const maxId = users.length > 0 ? Math.max(...users.map((u) => u.id)) : 0;
   const { hash, salt } = hashPassword(password);
 
+  const result = await pool.query(
+    'INSERT INTO "localUsers" (email, name, passwordHash, salt) VALUES ($1, $2, $3, $4) RETURNING id, email, name, createdAt',
+    [email, name, hash, salt]
+  );
+
+  const row = result.rows[0];
   const user: StoredUser = {
-    id: maxId + 1,
-    email,
-    name,
+    id: row.id,
+    email: row.email,
+    name: row.name,
     passwordHash: hash,
     salt,
-    createdAt: new Date().toISOString(),
+    createdAt: row.createdAt?.toISOString?.() || row.createdAt,
   };
 
-  users.push(user);
-  saveUsers(users);
-
-  invite.usedBy = email;
-  invite.usedAt = new Date().toISOString();
-  saveInviteCodes(codes);
+  await pool.query(
+    'UPDATE "inviteCodes" SET "usedBy" = $1, "usedAt" = now() WHERE code = $2',
+    [email, inviteCode]
+  );
 
   return user;
 }
 
-export function loginUser(email: string, password: string): StoredUser {
-  const user = findUserByEmail(email);
+export async function loginUser(email: string, password: string): Promise<StoredUser> {
+  const user = await findUserByEmail(email);
   if (!user) throw new Error("Email o password non validi");
 
   const { hash } = hashPassword(password, user.salt);
@@ -123,8 +175,8 @@ export function loginUser(email: string, password: string): StoredUser {
   return user;
 }
 
-export function validateInviteCode(code: string): { valid: boolean; message?: string } {
-  const codes = getInviteCodes();
+export async function validateInviteCode(code: string): Promise<{ valid: boolean; message?: string }> {
+  const codes = await getInviteCodes();
   const invite = codes.find((c) => c.code === code);
 
   if (!invite) return { valid: false, message: "Codice invito non valido" };
@@ -136,27 +188,34 @@ export function validateInviteCode(code: string): { valid: boolean; message?: st
   return { valid: true };
 }
 
-export function generateInviteCode(createdBy: string, expiresInDays?: number): InviteCode {
-  const codes = getInviteCodes();
-  const code: InviteCode = {
-    code: generateCode(),
-    createdBy,
-    createdAt: new Date().toISOString(),
-  };
+export async function generateInviteCode(createdBy: string, expiresInDays?: number): Promise<InviteCode> {
+  const pool = getPool();
+  if (!pool) throw new Error("Database non disponibile");
 
+  const code = generateCode();
+
+  let expiresAt: string | null = null;
   if (expiresInDays && expiresInDays > 0) {
     const exp = new Date();
     exp.setDate(exp.getDate() + expiresInDays);
-    code.expiresAt = exp.toISOString();
+    expiresAt = exp.toISOString();
   }
 
-  codes.push(code);
-  saveInviteCodes(codes);
-  return code;
+  await pool.query(
+    'INSERT INTO "inviteCodes" (code, "createdBy", "expiresAt") VALUES ($1, $2, $3)',
+    [code, createdBy, expiresAt]
+  );
+
+  return {
+    code,
+    createdBy,
+    createdAt: new Date().toISOString(),
+    expiresAt: expiresAt || undefined,
+  };
 }
 
-export function getSessionUser(email: string): { id: number; email: string; name: string } | null {
-  const user = findUserByEmail(email);
+export async function getSessionUser(email: string): Promise<{ id: number; email: string; name: string } | null> {
+  const user = await findUserByEmail(email);
   if (!user) return null;
   return { id: user.id, email: user.email, name: user.name };
 }
