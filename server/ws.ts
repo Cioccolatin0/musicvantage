@@ -34,13 +34,13 @@ export function setupWebSocket(server: Server) {
     clients.push({ ws, userId });
     console.log(`[WS] User ${userId} connected (${clients.length} total)`);
 
-    ws.on("close", () => {
+    ws.on("close", async () => {
       const idx = clients.findIndex((c) => c.ws === ws);
       if (idx >= 0) clients.splice(idx, 1);
       console.log(`[WS] User ${userId} disconnected (${clients.length} total)`);
 
       // Broadcast "stopped" to friends so they know this user is offline
-      const friends = getFriends(userId);
+      const friends = await getFriends(userId);
       const friendIds = new Set(friends.map((f) => f.id));
       const stoppedMsg = JSON.stringify({ type: "stopped", userId });
       for (const client of clients) {
@@ -61,13 +61,13 @@ export function getConnectedUserIds(): number[] {
   return clients.map((c) => c.userId);
 }
 
-export function broadcastActivity(userId: number, activity: {
+export async function broadcastActivity(userId: number, activity: {
   trackId: string;
   trackTitle: string;
   trackArtist: string;
   trackThumbnail: string;
 } | null) {
-  const friends = getFriends(userId);
+  const friends = await getFriends(userId);
   const friendIds = new Set(friends.map((f) => f.id));
 
   if (!activity) {

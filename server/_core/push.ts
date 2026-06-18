@@ -20,8 +20,12 @@ function getOrCreateVapidKeys(): VapidKeys {
   } catch {}
 
   const keys = webpush.generateVAPIDKeys();
-  fs.writeFileSync(VAPID_FILE, JSON.stringify(keys, null, 2));
-  console.log("[Push] Generated new VAPID keys");
+  try {
+    fs.writeFileSync(VAPID_FILE, JSON.stringify(keys, null, 2));
+    console.log("[Push] Generated new VAPID keys");
+  } catch {
+    console.warn("[Push] Could not persist VAPID keys (read-only fs), using in-memory keys");
+  }
   return keys;
 }
 
@@ -38,7 +42,7 @@ export function getVapidPublicKey(): string {
 }
 
 export async function sendPushNotification(userId: number, title: string, body: string, data?: Record<string, unknown>) {
-  const subs = socialDb.getPushSubscriptions(userId);
+  const subs = await socialDb.getPushSubscriptions(userId);
   if (subs.length === 0) return;
 
   const payload = JSON.stringify({

@@ -14,6 +14,7 @@ import * as localAuth from "./_core/localAuth";
 import { ensureWorker, callPythonWorker } from "./python-worker";
 import { setupWebSocket } from "./ws";
 import { ensureTables } from "../db";
+import pool from "./_core/pg";
 import { spawn, execFileSync } from "child_process";
 import path from "path";
 import fs from "fs";
@@ -33,12 +34,15 @@ try {
       if (fs.existsSync(alt)) { YT_DLP_PATH = alt; }
     }
   } catch {}
-  // Linux fallback: try python3 -m yt_dlp
+  // Fallback: try python3/python -m yt_dlp
   if (YT_DLP_PATH === "yt-dlp") {
-    try {
-      execFileSync("python3", ["-m", "yt_dlp", "--version"], { timeout: 5000, stdio: "ignore" });
-      YT_DLP_PATH = "PYTHON_YT_DLP";
-    } catch {}
+    for (const pyBin of ["python3", "python"]) {
+      try {
+        execFileSync(pyBin, ["-m", "yt_dlp", "--version"], { timeout: 5000, stdio: "ignore" });
+        YT_DLP_PATH = "PYTHON_YT_DLP";
+        break;
+      } catch {}
+    }
   }
 }
 const PYTHON_SCRIPT = path.join(__dirname, "../ytmusic_api.py");
@@ -232,7 +236,48 @@ async function startServer() {
 
   // Audio URL cache - resolves via yt-dlp once, serves instantly after
   const audioUrlCache = new Map<string, { url: string; expires: number }>();
-  const AUDIO_CACHE_TTL = 3 * 60 * 60 * 1000; // 3 hours
+  const AUDIO_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
+  const AUDIO_CACHE_MAX = 5000;
+
+  function cacheAudioUrl(videoId: string, url: string) {
+    audioUrlCache.set(videoId, { url, expires: Date.now() + AUDIO_CACHE_TTL });
+    if (audioUrlCache.size > AUDIO_CACHE_MAX) {
+      const oldest = audioUrlCache.keys().next().value;
+      if (oldest) audioUrlCache.delete(oldest);
+    }
+  }
+
+  function tryFormat(videoId: string, fmt: string, timeoutMs: number): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const baseArgs = YT_DLP_PATH === "PYTHON_YT_DLP"
+        ? ["-m", "yt_dlp"]
+        : [];
+      const args = [
+        ...baseArgs,
+        "--no-warnings", "--no-playlist", "--no-progress", "--quiet",
+        "--extractor-retries", "3",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "-f", fmt, "--get-url",
+        `https://www.youtube.com/watch?v=${videoId}`
+      ];
+      const bin = YT_DLP_PATH === "PYTHON_YT_DLP" ? "python3" : YT_DLP_PATH;
+      const proc = spawn(bin, args, {
+        timeout: timeoutMs,
+        env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+      });
+      let stdout = "";
+      let stderr = "";
+      proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+      proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+      proc.on("close", (code) => {
+        const trimmed = stdout.trim();
+        if (code === 0 && trimmed && trimmed.startsWith("http")) resolve(trimmed.split("\n")[0]);
+        else reject(new Error(stderr.slice(0, 300) || `exit code ${code}`));
+      });
+      proc.on("error", reject);
+      setTimeout(() => { try { proc.kill(); } catch {} reject(new Error("timeout")); }, timeoutMs);
+    });
+  }
 
   async function resolveAudioUrl(videoId: string): Promise<string> {
     const cached = audioUrlCache.get(videoId);
@@ -244,37 +289,27 @@ async function startServer() {
       "worstaudio",
     ];
 
-    for (const fmt of formatOpts) {
-      try {
-        const url = await new Promise<string>((resolve, reject) => {
-          const args = YT_DLP_PATH === "PYTHON_YT_DLP"
-            ? ["-m", "yt_dlp", "--no-warnings", "--no-playlist", "--no-progress", "--quiet", "-f", fmt, "--get-url", `https://www.youtube.com/watch?v=${videoId}`]
-            : ["--no-warnings", "--no-playlist", "--no-progress", "--quiet", "-f", fmt, "--get-url", `https://www.youtube.com/watch?v=${videoId}`];
-          const bin = YT_DLP_PATH === "PYTHON_YT_DLP" ? "python3" : YT_DLP_PATH;
-          const proc = spawn(bin, args, {
-            timeout: 15000,
-            env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
-          });
-          let stdout = "";
-          let stderr = "";
-          proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
-          proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
-          proc.on("close", (code) => {
-            const trimmed = stdout.trim();
-            if (code === 0 && trimmed && trimmed.startsWith("http")) resolve(trimmed.split("\n")[0]);
-            else reject(new Error(stderr.slice(0, 200)));
-          });
-          proc.on("error", reject);
-          setTimeout(() => { try { proc.kill(); } catch {} reject(new Error("timeout")); }, 15000);
-        });
+    const timeoutMs = 30000;
+    const maxRetries = 2;
 
-        if (url) {
-          audioUrlCache.set(videoId, { url, expires: Date.now() + AUDIO_CACHE_TTL });
-          return url;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const promises = formatOpts.map(fmt => tryFormat(videoId, fmt, timeoutMs));
+
+      try {
+        const url = await Promise.any(promises);
+        cacheAudioUrl(videoId, url);
+        return url;
+      } catch (agg) {
+        const errors = (agg as any)?.errors || [agg];
+        const messages = errors.map((e: any) => e?.message?.slice(0, 100) || String(e)).join("; ");
+        console.error(`[AudioProxy] Attempt ${attempt}/${maxRetries} failed for ${videoId}: ${messages}`);
+        if (attempt < maxRetries) {
+          await new Promise(r => setTimeout(r, 2000 * attempt));
         }
-      } catch {}
+      }
     }
-    throw new Error("Failed to resolve audio URL");
+
+    throw new Error("Failed to resolve audio URL after retries");
   }
 
   // Audio proxy endpoint - resolves URL via cache, streams audio through server (avoids CORS)
@@ -288,38 +323,38 @@ async function startServer() {
     try {
       const url = await resolveAudioUrl(videoId);
 
-      const getClient = url.startsWith("https") ? httpsGet : httpGet;
+      const reqOpts = { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" } };
 
-      getClient(url, (upstream) => {
-        if (upstream.statusCode && upstream.statusCode >= 300 && upstream.statusCode < 400 && upstream.headers.location) {
-          const redirectUrl = upstream.headers.location;
-          const redirectGet = redirectUrl.startsWith("https") ? httpsGet : httpGet;
-          redirectGet(redirectUrl, (redirectRes) => {
-            res.writeHead(redirectRes.statusCode || 200, {
-              "Content-Type": redirectRes.headers["content-type"] || "audio/webm",
-              "Content-Length": redirectRes.headers["content-length"] || undefined,
-              "Accept-Ranges": "bytes",
-              "Access-Control-Allow-Origin": "*",
-            });
-            redirectRes.pipe(res);
-          }).on("error", (err) => {
-            console.error(`[AudioProxy] Redirect stream error for ${videoId}:`, err.message);
-            if (!res.headersSent) res.status(502).json({ error: "Stream error" });
-          });
+      function streamUpstream(sourceUrl: string, redirectCount = 0) {
+        if (redirectCount > 5) {
+          if (!res.headersSent) res.status(502).json({ error: "Troppi reindirizzamenti" });
           return;
         }
-
-        res.writeHead(upstream.statusCode || 200, {
-          "Content-Type": upstream.headers["content-type"] || "audio/webm",
-          "Content-Length": upstream.headers["content-length"] || undefined,
-          "Accept-Ranges": "bytes",
-          "Access-Control-Allow-Origin": "*",
+        const client = sourceUrl.startsWith("https") ? httpsGet : httpGet;
+        client(sourceUrl, reqOpts, (upstream) => {
+          if (upstream.statusCode && upstream.statusCode >= 300 && upstream.statusCode < 400 && upstream.headers.location) {
+            streamUpstream(upstream.headers.location, redirectCount + 1);
+            return;
+          }
+          if (!upstream.statusCode || upstream.statusCode >= 400) {
+            console.error(`[AudioProxy] Upstream ${upstream.statusCode} for ${videoId}`);
+            if (!res.headersSent) res.status(502).json({ error: "Impossibile riprodurre questo brano" });
+            return;
+          }
+          res.writeHead(upstream.statusCode, {
+            "Content-Type": upstream.headers["content-type"] || "audio/webm",
+            "Content-Length": upstream.headers["content-length"] || undefined,
+            "Accept-Ranges": "bytes",
+            "Access-Control-Allow-Origin": "*",
+          });
+          upstream.pipe(res);
+        }).on("error", (err) => {
+          console.error(`[AudioProxy] Stream error for ${videoId}:`, err.message);
+          if (!res.headersSent) res.status(502).json({ error: "Impossibile riprodurre questo brano" });
         });
-        upstream.pipe(res);
-      }).on("error", (err) => {
-        console.error(`[AudioProxy] Stream error for ${videoId}:`, err.message);
-        if (!res.headersSent) res.status(502).json({ error: "Impossibile riprodurre questo brano" });
-      });
+      }
+
+      streamUpstream(url);
     } catch (err) {
       console.error(`[AudioProxy] Failed for ${videoId}:`, (err as Error).message);
       if (!res.headersSent) res.status(502).json({ error: "Impossibile riprodurre questo brano" });
@@ -357,7 +392,7 @@ async function startServer() {
       return;
     }
     res.json({ ok: true });
-    const valid = ids.filter((id: string) => typeof id === "string" && /^[a-zA-Z0-9_-]{1,20}$/.test(id)).slice(0, 20);
+    const valid = ids.filter((id: string) => typeof id === "string" && /^[a-zA-Z0-9_-]{1,20}$/.test(id)).slice(0, 30);
     await Promise.allSettled(valid.map((id: string) => resolveAudioUrl(id).catch(() => {})));
   });
 
@@ -438,20 +473,32 @@ async function startServer() {
     res.send(content);
   });
 
-  if (process.env.NODE_ENV === "development") {
-    await setupVite(app, server, port);
-  } else {
-    serveStatic(app);
-  }
-
   const preferredPort = parseInt(process.env.PORT || "4000");
   const port = await findAvailablePort(preferredPort);
   if (port !== preferredPort) {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   }
 
+  if (process.env.NODE_ENV === "development") {
+    await setupVite(app, server, port);
+  } else {
+    serveStatic(app);
+  }
+
   await ensureTables().catch((err) => {
     console.error("[Database] Table creation failed:", err.message);
+  });
+
+  // Graceful shutdown
+  process.on("SIGINT", async () => {
+    console.log("\n[Server] Shutting down...");
+    await pool.end().catch(() => {});
+    process.exit(0);
+  });
+  process.on("SIGTERM", async () => {
+    console.log("\n[Server] Shutting down...");
+    await pool.end().catch(() => {});
+    process.exit(0);
   });
 
   server.listen(port, async () => {
@@ -462,9 +509,13 @@ async function startServer() {
       console.log(`[Auth] Found ${codes.length} invite code(s) in database`);
       if (codes.length === 0) {
         const code = await localAuth.generateInviteCode("system", 90);
-        console.log(`\n  ====================================`);
-        console.log(`  Default invite code: ${code.code}`);
-        console.log(`  ====================================\n`);
+        if (code) {
+          console.log(`\n  ====================================`);
+          console.log(`  Default invite code: ${code.code}`);
+          console.log(`  ====================================\n`);
+        } else {
+          console.log(`\n  [Auth] No database available for invite codes. Use Admin panel to generate them later.\n`);
+        }
       } else {
         const unused = codes.filter(c => !c.usedBy);
         if (unused.length > 0) {

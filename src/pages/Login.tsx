@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { useLocation, useSearch } from "wouter";
-import { useQueryClient } from "@tanstack/react-query";
 import { trpc } from "@/lib/trpc";
 import { Music2, Mail, Lock, User, KeyRound, Loader2, AlertCircle, CheckCircle2, Eye, EyeOff, LogIn, UserPlus } from "lucide-react";
 import { toast } from "sonner";
@@ -24,7 +23,7 @@ function TabButton({ active, label, icon: Icon, onClick }: { active: boolean; la
 
 function LoginForm() {
   const [, navigate] = useLocation();
-  const queryClient = useQueryClient();
+  const utils = trpc.useUtils();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -33,7 +32,7 @@ function LoginForm() {
   const loginMutation = trpc.auth.login.useMutation({
     onSuccess: (data) => {
       setCachedUser(data);
-      queryClient.setQueryData([["auth", "me"]], data);
+      utils.auth.me.setData(undefined, data);
       toast.success("Accesso effettuato!");
       navigate("/");
     },
@@ -116,7 +115,7 @@ function LoginForm() {
 
 function RegisterForm({ initialCode }: { initialCode: string }) {
   const [, navigate] = useLocation();
-  const queryClient = useQueryClient();
+  const utils = trpc.useUtils();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -132,7 +131,7 @@ function RegisterForm({ initialCode }: { initialCode: string }) {
   const registerMutation = trpc.auth.register.useMutation({
     onSuccess: (data) => {
       setCachedUser(data);
-      queryClient.setQueryData([["auth", "me"]], data);
+      utils.auth.me.setData(undefined, data);
       toast.success("Registrazione completata!");
       navigate("/");
     },

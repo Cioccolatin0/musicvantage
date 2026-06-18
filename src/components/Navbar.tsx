@@ -5,7 +5,8 @@ import { trpc } from "@/lib/trpc";
 import SafeImg from "./SafeImg";
 import { useAuth } from "@/hooks/useAuth";
 
-const DEBOUNCE_MS = 80;
+const FAST_DEBOUNCE_MS = 15;
+const FULL_DEBOUNCE_MS = 250;
 
 export default function Navbar() {
   const [, navigate] = useLocation();
@@ -17,38 +18,27 @@ export default function Navbar() {
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
   const fastTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const inputRef = useRef<HTMLInputElement>(null);
-  const prefetchTimerRef = useRef<ReturnType<typeof setTimeout>>();
-  const utils = trpc.useContext();
-
-  const firePrefetch = useCallback((queries: string[]) => {
-    fetch(`${import.meta.env.VITE_API_URL || ""}/api/trpc/music.searchPrefetch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ json: { queries } }),
-      keepalive: true,
-    }).catch(() => {});
-  }, []);
 
   const { data: unreadCount = 0 } = trpc.notifications.unreadCount.useQuery(undefined, {
     enabled: !!user,
     refetchInterval: 10000,
   });
 
-  // Fast debounce (50ms) for instant text suggestions
+  // Ultra-fast debounce (15ms) for instant text suggestions only
   useEffect(() => {
     if (fastTimerRef.current) clearTimeout(fastTimerRef.current);
     fastTimerRef.current = setTimeout(() => {
       setFastDebouncedQuery(query.trim());
-    }, 25);
+    }, FAST_DEBOUNCE_MS);
     return () => { if (fastTimerRef.current) clearTimeout(fastTimerRef.current); };
   }, [query]);
 
-  // Slow debounce (150ms) for full track results
+  // Slow debounce (250ms) for full track results - only fire when user pauses
   useEffect(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       setDebouncedQuery(query.trim());
-    }, DEBOUNCE_MS);
+    }, FULL_DEBOUNCE_MS);
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [query]);
 
@@ -56,13 +46,13 @@ export default function Navbar() {
   const { data: fastSuggestions, isFetching: fastFetching } = trpc.music.searchSuggestionsFast.useQuery(
     { query: fastDebouncedQuery },
     {
-      enabled: fastDebouncedQuery.length >= 2,
+      enabled: fastDebouncedQuery.length >= 1,
       staleTime: 5 * 60 * 1000,
       retry: 0,
     }
   );
 
-  // Tier 2: Full track results with thumbnails (~1-2s from search_quick)
+  // Tier 2: Full track results with thumbnails - only fires when user pauses typing
   const { data: fullSuggestions, isFetching: fullFetching } = trpc.music.searchSuggestions.useQuery(
     { query: debouncedQuery },
     {
@@ -73,31 +63,13 @@ export default function Navbar() {
     }
   );
 
-  // Background prefetch: as user types, prefetch next-char extensions in Python
-  useEffect(() => {
-    if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current);
-    if (debouncedQuery.length < 3) return;
-
-    prefetchTimerRef.current = setTimeout(() => {
-      const q = debouncedQuery.toLowerCase();
-      const nextChars = ["a","e","i","o","u","b","r","s","t","l","n"];
-      const prefetchQueries = nextChars.map((c: string) => q + c);
-      firePrefetch(prefetchQueries.slice(0, 3));
-      for (const pq of prefetchQueries.slice(0, 2)) {
-        utils.music.searchSuggestions.fetch({ query: pq }).catch(() => {});
-      }
-    }, 200);
-    return () => { if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current); };
-  }, [debouncedQuery, firePrefetch]);
-
   const handleFocus = useCallback(() => {
     setFocused(true);
-    firePrefetch(["fedez", "gianna", "mahmood", "ultimo", "blinding lights", "taylor swift"]);
-  }, [firePrefetch]);
+  }, []);
 
   const hasFastSuggestions = fastSuggestions?.suggestions?.length > 0;
   const hasFullSuggestions = fullSuggestions?.tracks && fullSuggestions.tracks.length > 0;
-  const showDropdown = focused && fastDebouncedQuery.length >= 2 && (fastFetching || fullFetching || hasFastSuggestions || hasFullSuggestions);
+  const showDropdown = focused && fastDebouncedQuery.length >= 1 && (fastFetching || fullFetching || hasFastSuggestions || hasFullSuggestions);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -183,10 +155,7 @@ export default function Navbar() {
                         key={i}
                         type="button"
                         onMouseDown={(e) => { e.preventDefault(); goToSearch(s); }}
-                        onMouseEnter={() => {
-                          utils.music.searchSuggestions.fetch({ query: s }).catch(() => {});
-                          firePrefetch([s]);
-                        }}
+                        onMouseEnter={() => {}}
                         className="w-full flex items-center gap-3 p-2.5 rounded-lg hover:bg-surface-1 transition-colors text-left"
                       >
                         <div className="w-9 h-9 rounded-lg bg-surface-2 flex items-center justify-center shrink-0">

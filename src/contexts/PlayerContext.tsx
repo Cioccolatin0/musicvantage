@@ -206,9 +206,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             reportListeningRef.current(stateRef.current.currentTrack);
           }
           const dur = audio.duration || 0;
-          if (dur > 0 && audio.currentTime >= dur * 0.4) {
+          if (dur > 0 && audio.currentTime >= dur * 0.25) {
             const s = stateRef.current;
-            const nextTracks = s.queue.slice(s.queueIndex + 1, s.queueIndex + 4);
+            const nextTracks = s.queue.slice(s.queueIndex + 1, s.queueIndex + 5);
             if (nextTracks.length > 0) {
               prefetchAudioUrls(nextTracks.map((t) => t.id));
               preloadTrackAudio(nextTracks[0].id);
@@ -216,7 +216,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           }
         }
       } catch {}
-    }, 500);
+    }, 1000);
   }, []);
 
   const stopTimer = useCallback(() => {
@@ -248,7 +248,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       preloadAudio = null;
       // Still prefetch upcoming tracks
       const s = stateRef.current;
-      const upcoming = s.queue.slice(s.queueIndex + 1, s.queueIndex + 4).map((t) => t.id);
+      const upcoming = s.queue.slice(s.queueIndex + 1, s.queueIndex + 6).map((t) => t.id);
       if (upcoming.length > 0) prefetchAudioUrls(upcoming);
       return;
     }
@@ -271,7 +271,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
 
     const s = stateRef.current;
-    const upcoming = s.queue.slice(s.queueIndex + 1, s.queueIndex + 4).map((t) => t.id);
+    const upcoming = s.queue.slice(s.queueIndex + 1, s.queueIndex + 6).map((t) => t.id);
     if (upcoming.length > 0) prefetchAudioUrls(upcoming);
   }, []);
 
@@ -415,7 +415,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             audioRef.current.load();
             audioRef.current.play().catch(() => {});
           }
-        }, 1500);
+        }, 800);
       } else {
         if (a) { a.src = ""; a.load(); }
         stateRef.current.isLoading = false;

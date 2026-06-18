@@ -31,6 +31,7 @@ COPY --chown=user drizzle/ ./drizzle/
 COPY --chown=user routers.ts ./
 COPY --chown=user db.ts ./
 COPY --chown=user tsconfig.json ./
+COPY --chown=user vapid-keys.json ./
 COPY --chown=user vite.config.ts ./
 COPY --chown=user ytmusic_api.py ./
 COPY --chown=user public/ ./public/

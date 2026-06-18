@@ -1,7 +1,14 @@
+import crypto from "crypto";
 import { COOKIE_NAME } from "../../shared/const";
 import { getUserByOpenId } from "../../db";
 import * as localAuth from "./localAuth";
 import type { Request } from "express";
+
+const SESSION_SECRET = process.env.SESSION_SECRET || "dev-secret";
+
+export function getSessionSig(userId: number, email: string): string {
+  return crypto.createHmac("sha256", SESSION_SECRET).update(`${userId}:${email}`).digest("hex");
+}
 
 export function getSessionCookieOptions(req: Request) {
   const isSecure = req.secure || req.headers["x-forwarded-proto"] === "https";
@@ -26,6 +33,16 @@ export async function getSessionFromCookie(req: Request) {
 
     // Local auth session (email-based)
     if (payload.email && payload.userId) {
+      // Fast path: verify HMAC signature, skip D1 query
+      if (payload.sig === getSessionSig(payload.userId, payload.email)) {
+        return {
+          id: payload.userId,
+          email: payload.email,
+          name: payload.name,
+          openId: payload.email,
+        };
+      }
+      // Fallback for old cookies without sig
       const user = await localAuth.getSessionUser(payload.email);
       if (!user) return undefined;
       return {

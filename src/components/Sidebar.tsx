@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   Music2, Home, Search, Library, Share2, Radio, LogOut, LogIn,
   UserPlus, Shield, Plus, ChevronLeft, ChevronRight,
@@ -13,7 +12,7 @@ import { usePlayer } from "../contexts/PlayerContext";
 
 export default function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [loc, navigate] = useLocation();
-  const queryClient = useQueryClient();
+  const utils = trpc.useUtils();
   const { user, isLoading } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const { data: playlists = [] } = trpc.library.playlists.useQuery(undefined, { enabled: !!user });
@@ -22,8 +21,8 @@ export default function Sidebar({ open, onClose }: { open: boolean; onClose: () 
   const logoutMutation = trpc.auth.logout.useMutation({
     onSuccess: () => {
       setCachedUser(null);
-      queryClient.setQueryData([["auth", "me"]], undefined);
-      queryClient.invalidateQueries({ queryKey: [["auth", "me"]] });
+      utils.auth.me.setData(undefined, undefined);
+      utils.auth.me.invalidate();
       navigate("/");
     },
   });

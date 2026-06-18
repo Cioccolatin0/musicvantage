@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useSearch } from "wouter";
 import { trpc } from "@/lib/trpc";
 import TrackCard from "../components/TrackCard";
@@ -8,6 +8,19 @@ import SafeImg from "../components/SafeImg";
 import { usePlayer } from "@/contexts/PlayerContext";
 import { useLocation } from "wouter";
 import { Music2, Users, Disc3, Search, Loader2, Sparkles, Play } from "lucide-react";
+
+function prefetchAudioUrls(trackIds: string[]) {
+  if (trackIds.length === 0) return;
+  const apiBase = import.meta.env.VITE_API_URL || "";
+  for (let i = 0; i < trackIds.length; i += 10) {
+    const batch = trackIds.slice(i, i + 10);
+    fetch(`${apiBase}/api/prefetch-audio`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ videoIds: batch }),
+    }).catch(() => {});
+  }
+}
 
 type Tab = "all" | "tracks" | "artists" | "albums";
 
@@ -33,7 +46,7 @@ export default function SearchResults() {
     { query },
     {
       enabled: query.length > 0,
-      staleTime: 5 * 60 * 1000,
+      staleTime: 2 * 60 * 1000,
       keepPreviousData: true,
       retry: 1,
     }
@@ -41,7 +54,7 @@ export default function SearchResults() {
   // Fetch songs-only immediately to show tracks fast, keep full search for artists/albums
   const searchSongs = trpc.music.search.useQuery(
     { query, filter: "songs" },
-    { enabled: query.length > 0, staleTime: 30 * 1000, keepPreviousData: true, retry: 1 }
+    { enabled: query.length > 0, staleTime: 60 * 1000, keepPreviousData: true, retry: 1 }
   );
 
   const noDataYet = !searchSongs.data && !searchAll.data;
@@ -71,6 +84,14 @@ export default function SearchResults() {
     { id: "artists", label: "Artisti", icon: Users, count: artists?.length },
     { id: "albums", label: "Album", icon: Disc3, count: albums?.length },
   ];
+
+  // Prefetch audio URLs for top tracks when search results arrive (instant playback)
+  useEffect(() => {
+    if (tracks.length > 0) {
+      const ids = tracks.slice(0, 10).map((t) => t.id);
+      prefetchAudioUrls(ids);
+    }
+  }, [tracks.slice(0, 5).map((t) => t.id).join(",")]);
 
   // Decide if we should show a prominent artist banner
   const { playTrack } = usePlayer();

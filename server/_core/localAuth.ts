@@ -1,14 +1,5 @@
 import crypto from "crypto";
-import { Pool } from "pg";
-
-let _pool: Pool | null = null;
-
-function getPool(): Pool | null {
-  if (_pool) return _pool;
-  if (!process.env.DATABASE_URL) return null;
-  _pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  return _pool;
-}
+import { query, queryOne, run } from "./pg";
 
 type StoredUser = {
   id: number;
@@ -38,126 +29,101 @@ function generateCode(): string {
   return crypto.randomBytes(4).toString("hex").toUpperCase();
 }
 
+function mapUserRow(r: any): StoredUser {
+  return {
+    id: r.id,
+    email: r.email,
+    name: r.name,
+    passwordHash: r.password_hash,
+    salt: r.salt,
+    createdAt: typeof r.created_at === "object" ? r.created_at.toISOString() : r.created_at,
+  };
+}
+
+function mapCodeRow(r: any): InviteCode {
+  return {
+    code: r.code,
+    usedBy: r.used_by || undefined,
+    usedAt: r.used_at ? (typeof r.used_at === "object" ? r.used_at.toISOString() : r.used_at) : undefined,
+    createdBy: r.created_by,
+    createdAt: typeof r.created_at === "object" ? r.created_at.toISOString() : r.created_at,
+    expiresAt: r.expires_at ? (typeof r.expires_at === "object" ? r.expires_at.toISOString() : r.expires_at) : undefined,
+  };
+}
+
 export async function getUsers(): Promise<StoredUser[]> {
-  const pool = getPool();
-  if (!pool) return [];
   try {
-    const result = await pool.query('SELECT * FROM "localUsers" ORDER BY id');
-    return result.rows.map((r) => ({
-      id: r.id,
-      email: r.email,
-      name: r.name,
-      passwordHash: r.password_hash,
-      salt: r.salt,
-      createdAt: r.created_at?.toISOString?.() || r.created_at,
-    }));
+    const rows = await query('SELECT * FROM "localUsers" ORDER BY id');
+    return rows.map(mapUserRow);
   } catch (error) {
-    console.error("[localAuth] Failed to get users:", error);
+    console.error("[localAuth] getUsers failed:", error);
     return [];
   }
 }
 
 export async function getInviteCodes(): Promise<InviteCode[]> {
-  const pool = getPool();
-  if (!pool) return [];
   try {
-    const result = await pool.query('SELECT * FROM "inviteCodes" ORDER BY id');
-    return result.rows.map((r) => ({
-      code: r.code,
-      usedBy: r.used_by || undefined,
-      usedAt: r.used_at?.toISOString?.() || r.used_at || undefined,
-      createdBy: r.created_by,
-      createdAt: r.created_at?.toISOString?.() || r.created_at,
-      expiresAt: r.expires_at?.toISOString?.() || r.expires_at || undefined,
-    }));
+    const rows = await query('SELECT * FROM "inviteCodes" ORDER BY id');
+    return rows.map(mapCodeRow);
   } catch (error) {
-    console.error("[localAuth] Failed to get invite codes:", error);
+    console.error("[localAuth] getInviteCodes failed:", error);
     return [];
   }
 }
 
 export async function findUserByEmail(email: string): Promise<StoredUser | undefined> {
-  const pool = getPool();
-  if (!pool) return undefined;
   try {
-    const result = await pool.query('SELECT * FROM "localUsers" WHERE email = $1 LIMIT 1', [email]);
-    if (result.rows.length === 0) return undefined;
-    const r = result.rows[0];
-    return {
-      id: r.id,
-      email: r.email,
-      name: r.name,
-      passwordHash: r.password_hash,
-      salt: r.salt,
-      createdAt: r.created_at?.toISOString?.() || r.created_at,
-    };
+    const row = await queryOne('SELECT * FROM "localUsers" WHERE email = $1 LIMIT 1', [email]);
+    return row ? mapUserRow(row) : undefined;
   } catch (error) {
-    console.error("[localAuth] Failed to find user by email:", error);
+    console.error("[localAuth] findUserByEmail failed:", error);
     return undefined;
   }
 }
 
 export async function findUserById(id: number): Promise<StoredUser | undefined> {
-  const pool = getPool();
-  if (!pool) return undefined;
   try {
-    const result = await pool.query('SELECT * FROM "localUsers" WHERE id = $1 LIMIT 1', [id]);
-    if (result.rows.length === 0) return undefined;
-    const r = result.rows[0];
-    return {
-      id: r.id,
-      email: r.email,
-      name: r.name,
-      passwordHash: r.password_hash,
-      salt: r.salt,
-      createdAt: r.created_at?.toISOString?.() || r.created_at,
-    };
+    const row = await queryOne('SELECT * FROM "localUsers" WHERE id = $1 LIMIT 1', [id]);
+    return row ? mapUserRow(row) : undefined;
   } catch (error) {
-    console.error("[localAuth] Failed to find user by id:", error);
+    console.error("[localAuth] findUserById failed:", error);
     return undefined;
   }
 }
 
 export async function registerUser(email: string, name: string, password: string, inviteCode: string): Promise<StoredUser> {
-  const pool = getPool();
-  if (!pool) throw new Error("Database non disponibile");
-
   const codes = await getInviteCodes();
   const invite = codes.find((c) => c.code === inviteCode && !c.usedBy);
 
-  if (!invite) {
-    throw new Error("Codice invito non valido o già utilizzato");
-  }
-
+  if (!invite) throw new Error("Codice invito non valido o già utilizzato");
   if (invite.expiresAt && new Date(invite.expiresAt) < new Date()) {
     throw new Error("Codice invito scaduto");
   }
 
   const existing = await findUserByEmail(email);
-  if (existing) {
-    throw new Error("Email già registrata");
-  }
+  if (existing) throw new Error("Email già registrata");
 
   const { hash, salt } = hashPassword(password);
+  const now = new Date().toISOString();
 
-  const result = await pool.query(
-    'INSERT INTO "localUsers" (email, name, password_hash, salt) VALUES ($1, $2, $3, $4) RETURNING id, email, name, created_at',
-    [email, name, hash, salt]
+  const result = await run(
+    'INSERT INTO "localUsers" (email, name, password_hash, salt, created_at) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+    [email, name, hash, salt, now]
   );
 
-  const row = result.rows[0];
+  const row = result.rows?.[0];
   const user: StoredUser = {
-    id: row.id,
-    email: row.email,
-    name: row.name,
+    id: row?.id || 0,
+    email,
+    name,
     passwordHash: hash,
     salt,
-    createdAt: row.created_at?.toISOString?.() || row.created_at,
+    createdAt: now,
   };
 
-  await pool.query(
-    'UPDATE "inviteCodes" SET used_by = $1, used_at = now() WHERE code = $2',
-    [email, inviteCode]
+  await run(
+    'UPDATE "inviteCodes" SET used_by = $1, used_at = $2 WHERE code = $3',
+    [email, now, inviteCode]
   );
 
   return user;
@@ -188,11 +154,9 @@ export async function validateInviteCode(code: string): Promise<{ valid: boolean
   return { valid: true };
 }
 
-export async function generateInviteCode(createdBy: string, expiresInDays?: number): Promise<InviteCode> {
-  const pool = getPool();
-  if (!pool) throw new Error("Database non disponibile");
-
+export async function generateInviteCode(createdBy: string, expiresInDays?: number): Promise<InviteCode | null> {
   const code = generateCode();
+  const now = new Date().toISOString();
 
   let expiresAt: string | null = null;
   if (expiresInDays && expiresInDays > 0) {
@@ -201,17 +165,22 @@ export async function generateInviteCode(createdBy: string, expiresInDays?: numb
     expiresAt = exp.toISOString();
   }
 
-  await pool.query(
-    'INSERT INTO "inviteCodes" (code, created_by, expires_at) VALUES ($1, $2, $3)',
-    [code, createdBy, expiresAt]
-  );
+  try {
+    await run(
+      'INSERT INTO "inviteCodes" (code, created_by, expires_at) VALUES ($1, $2, $3)',
+      [code, createdBy, expiresAt]
+    );
+    return {
+      code,
+      createdBy,
+      createdAt: now,
+      expiresAt: expiresAt || undefined,
+    };
+  } catch (error) {
+    console.error("[localAuth] generateInviteCode failed:", error);
+  }
 
-  return {
-    code,
-    createdBy,
-    createdAt: new Date().toISOString(),
-    expiresAt: expiresAt || undefined,
-  };
+  return null;
 }
 
 export async function getSessionUser(email: string): Promise<{ id: number; email: string; name: string } | null> {

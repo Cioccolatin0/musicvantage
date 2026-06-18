@@ -94,11 +94,14 @@ def _set_cached_search(query: str, data):
 # Load cache on startup
 _load_search_cache()
 
-YT_DLP_CMD = ["yt-dlp"]
-try:
-    subprocess.run(YT_DLP_CMD + ["--version"], capture_output=True, timeout=5)
-except FileNotFoundError:
-    YT_DLP_CMD = ["python", "-m", "yt_dlp"]
+YT_DLP_CMD = None
+for candidate in [["yt-dlp"], [sys.executable, "-m", "yt_dlp"]]:
+    try:
+        subprocess.run(candidate + ["--version"], capture_output=True, timeout=5)
+        YT_DLP_CMD = candidate
+        break
+    except Exception:
+        continue
 
 SEARCH_TIMEOUT = 8
 
@@ -387,6 +390,8 @@ def get_album(album_id: str):
     return result
 
 def get_audio_url(video_id: str):
+    if YT_DLP_CMD is None:
+        return {"error": "yt-dlp not available"}
     url = f"https://www.youtube.com/watch?v={video_id}"
     # Try multiple format options in case one fails
     format_opts = [
@@ -707,6 +712,8 @@ def _spotify_normalize_tracks(raw_items):
 
 def _spotify_fetch_via_ytdlp(playlist_id: str):
     """Fetch all tracks from Spotify using yt-dlp as fallback."""
+    if YT_DLP_CMD is None:
+        return None
     try:
         url = f"https://open.spotify.com/playlist/{playlist_id}"
         print(f"[Spotify yt-dlp] Running: {' '.join(YT_DLP_CMD)} --flat-playlist ... {url}", file=sys.stderr)
@@ -988,12 +995,15 @@ def import_playlist(url: str):
     # Use embedded anonymous token for Spotify (no login required)
     if platform == "spotify":
         # Pre-check yt-dlp availability since it's the fallback for Spotify
-        try:
-            subprocess.run(YT_DLP_CMD + ["--version"], capture_output=True, timeout=5)
-        except FileNotFoundError:
-            print("[Spotify] WARNING: yt-dlp not found. Fallback will not work if embed page fails.", file=sys.stderr)
+        if YT_DLP_CMD is not None:
+            try:
+                subprocess.run(YT_DLP_CMD + ["--version"], capture_output=True, timeout=5)
+            except Exception:
+                pass
         return import_spotify_playlist(url)
 
+    if YT_DLP_CMD is None:
+        return {"error": "yt-dlp not available. Non è possibile importare questa playlist."}
     try:
         result = subprocess.run(
             YT_DLP_CMD + ["--flat-playlist", "--dump-json", "--skip-download", "--no-warnings", url],
@@ -1284,12 +1294,12 @@ def handle_request(action: str, args: dict):
         return search_suggestions_fast(args.get("query", ""))
     elif action == "prefetch":
         queries = args.get("queries", [])
-        # Search in parallel, only cache results (don't return large payloads)
+        # Search in parallel using lightweight search (search_quick) instead of search_all
         yt = get_yt()
         def _prefetch_one(q):
             cached = _get_cached_search(q)
             if cached is None:
-                search_all(q)
+                search_quick(q)
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
             pool.map(_prefetch_one, queries[:6])
         return {"ok": True, "cached": len(queries[:6])}

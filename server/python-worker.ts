@@ -124,6 +124,29 @@ export function ensureWorker(): Promise<void> {
   return _startupPromise;
 }
 
+const _concurrencyLimit = 3;
+let _activeCount = 0;
+const _pendingQueue: (() => void)[] = [];
+
+async function acquireSlot(): Promise<void> {
+  if (_activeCount < _concurrencyLimit) {
+    _activeCount++;
+    return;
+  }
+  return new Promise((resolve) => {
+    _pendingQueue.push(() => {
+      _activeCount++;
+      resolve();
+    });
+  });
+}
+
+function releaseSlot() {
+  _activeCount--;
+  const next = _pendingQueue.shift();
+  if (next) setImmediate(next);
+}
+
 export async function callPythonWorker(
   action: string,
   args: Record<string, unknown>,
@@ -142,6 +165,8 @@ export async function callPythonWorker(
     await ensureWorker();
   }
 
+  await acquireSlot();
+
   const timeoutMs = action === "import_playlist" ? 1800000 : action === "audio_url" ? 180000 : 60000;
   const promise = new Promise((resolve, reject) => {
     const id = ++_nextId;
@@ -155,11 +180,13 @@ export async function callPythonWorker(
       resolve: (data: unknown) => {
         clearTimeout(timer);
         _inflight.delete(cacheKey);
+        releaseSlot();
         resolve(data);
       },
       reject: (err: Error) => {
         clearTimeout(timer);
         _inflight.delete(cacheKey);
+        releaseSlot();
         reject(err);
       },
     });
@@ -169,6 +196,7 @@ export async function callPythonWorker(
         _queue.delete(id);
         _inflight.delete(cacheKey);
         clearTimeout(timer);
+        releaseSlot();
         reject(new Error("Python worker not running"));
         return;
       }
@@ -177,6 +205,7 @@ export async function callPythonWorker(
       _queue.delete(id);
       _inflight.delete(cacheKey);
       clearTimeout(timer);
+      releaseSlot();
       reject(new Error("Failed to send to Python worker"));
     }
   });

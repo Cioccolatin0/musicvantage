@@ -133,6 +133,8 @@ function PlaylistDropdown({ track, size = "sm" }: { track: Track; size?: "sm" | 
   );
 }
 
+let _hoverTimer: ReturnType<typeof setTimeout> | null = null;
+
 export default function TrackCard({ track, queue, index, showIndex, compact }: Props) {
   const { playTrack, addToQueue, currentTrack, isPlaying, openNowPlaying, preloadTrack } = usePlayer();
   const isActive = currentTrack?.id === track.id;
@@ -144,6 +146,15 @@ export default function TrackCard({ track, queue, index, showIndex, compact }: P
   const handleHover = () => {
     if (!isActive) {
       preloadTrack(track.id);
+      if (_hoverTimer) clearTimeout(_hoverTimer);
+      _hoverTimer = setTimeout(() => {
+        const apiBase = import.meta.env.VITE_API_URL || "";
+        fetch(`${apiBase}/api/prefetch-audio`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ videoIds: [track.id] }),
+        }).catch(() => {});
+      }, 400);
     }
   };
 

@@ -1,13 +1,11 @@
 import { COOKIE_NAME } from "@shared/const";
-import { getSessionCookieOptions } from "./server/_core/cookies";
+import { getSessionCookieOptions, getSessionSig } from "./server/_core/cookies";
 import { systemRouter } from "./server/_core/systemRouter";
 import { publicProcedure, router, protectedProcedure } from "./server/_core/trpc";
 import { z } from "zod";
 import { broadcastActivity, getConnectedUserIds } from "./server/ws";
-import crypto from "crypto";
 import * as db from "./db";
 import * as localAuth from "./server/_core/localAuth";
-import * as localDb from "./server/_core/db-local";
 import { callPythonWorker } from "./server/python-worker";
 import { clearPythonWorkerCache, getPythonWorkerCacheSize } from "./server/python-worker";
 import * as socialDb from "./server/_core/social-db";
@@ -20,7 +18,7 @@ function isMixOrCompilation(title: string): boolean {
 }
 
 const pythonCache = new Map<string, { data: unknown; expiry: number }>();
-const SEARCH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const SEARCH_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const searchPrefixCache = new Map<string, { data: unknown; expiry: number }>();
 
 async function callPython(action: string, args: Record<string, unknown>, cacheTtlMs: number = 0): Promise<unknown> {
@@ -165,13 +163,9 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const user = await localAuth.registerUser(input.email, input.name, input.password, input.inviteCode);
-        const sessionToken = crypto
-          .createHmac("sha256", process.env.SESSION_SECRET || "dev-secret")
-          .update(`${user.email}:${Date.now()}`)
-          .digest("hex");
 
         const sessionPayload = Buffer.from(
-          JSON.stringify({ userId: user.id, email: user.email, name: user.name, token: sessionToken })
+          JSON.stringify({ userId: user.id, email: user.email, name: user.name, sig: getSessionSig(user.id, user.email) })
         ).toString("base64");
 
         const cookieOptions = getSessionCookieOptions(ctx.req);
@@ -187,13 +181,9 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const user = await localAuth.loginUser(input.email, input.password);
-        const sessionToken = crypto
-          .createHmac("sha256", process.env.SESSION_SECRET || "dev-secret")
-          .update(`${user.email}:${Date.now()}`)
-          .digest("hex");
 
         const sessionPayload = Buffer.from(
-          JSON.stringify({ userId: user.id, email: user.email, name: user.name, token: sessionToken })
+          JSON.stringify({ userId: user.id, email: user.email, name: user.name, sig: getSessionSig(user.id, user.email) })
         ).toString("base64");
 
         const cookieOptions = getSessionCookieOptions(ctx.req);
@@ -254,9 +244,30 @@ export const appRouter = router({
         }
 
         // Prefix match: if user typed "beatl", check if "beatles" is cached
+        // Use best (longest) prefix match for most accurate results
+        let bestPrefixMatch: { data: unknown; expiry: number } | null = null;
+        let bestPrefixLen = 0;
         for (const [key, val] of searchPrefixCache.entries()) {
-          if (key.startsWith(q) && val.expiry > Date.now()) {
-            return withMaxDuration(val.data as { tracks?: Track[]; artists?: Artist[]; albums?: Album[] }, 300, q) as { tracks: Track[]; artists: Artist[]; albums: Album[] };
+          if (key.length > q.length && key.startsWith(q) && val.expiry > Date.now()) {
+            if (key.length > bestPrefixLen) {
+              bestPrefixLen = key.length;
+              bestPrefixMatch = val;
+            }
+          }
+        }
+        if (bestPrefixMatch) {
+          return withMaxDuration(bestPrefixMatch.data as { tracks?: Track[]; artists?: Artist[]; albums?: Album[] }, 300, q) as { tracks: Track[]; artists: Artist[]; albums: Album[] };
+        }
+
+        // If a shorter cached query is a prefix of q and returned 0 results,
+        // don't bother querying Python - extensions will also be empty
+        for (const [key, val] of searchPrefixCache.entries()) {
+          if (q.startsWith(key) && val.expiry > Date.now()) {
+            const d = val.data as any;
+            const totalResults = (d?.tracks?.length || 0) + (d?.artists?.length || 0);
+            if (totalResults === 0) {
+              return withMaxDuration({ tracks: [], artists: [], albums: [] }, 300, q) as { tracks: Track[]; artists: Artist[]; albums: Album[] };
+            }
           }
         }
 
@@ -280,7 +291,7 @@ export const appRouter = router({
         searchPrefixCache.set(q, { data: result, expiry: Date.now() + SEARCH_CACHE_TTL });
 
         // Trim prefix cache if too large
-        if (searchPrefixCache.size > 200) {
+        if (searchPrefixCache.size > 400) {
           const firstKey = searchPrefixCache.keys().next().value;
           if (firstKey) searchPrefixCache.delete(firstKey);
         }
@@ -376,10 +387,32 @@ export const appRouter = router({
           return withMaxDuration(cached.data as { tracks?: Track[]; artists?: Artist[]; albums?: Album[] }, 300, q) as { tracks: Track[]; artists: Artist[]; albums: Album[] };
         }
 
-        // Check prefix cache - return filtered
+        // Smart prefix cache: if ANY longer cached query starts with q, return it
+        // e.g. if "shiva" is cached and query is "shiv", use shiva's results
+        let bestPrefixMatch: { data: unknown; expiry: number } | null = null;
+        let bestPrefixLen = 0;
         for (const [key, val] of searchPrefixCache.entries()) {
-          if (key.startsWith(q) && val.expiry > Date.now()) {
-            return withMaxDuration(val.data as { tracks?: Track[]; artists?: Artist[]; albums?: Album[] }, 300, q) as { tracks: Track[]; artists: Artist[]; albums: Album[] };
+          if (key.length > q.length && key.startsWith(q) && val.expiry > Date.now()) {
+            if (key.length > bestPrefixLen) {
+              bestPrefixLen = key.length;
+              bestPrefixMatch = val;
+            }
+          }
+        }
+        if (bestPrefixMatch) {
+          return withMaxDuration(bestPrefixMatch.data as { tracks?: Track[]; artists?: Artist[]; albums?: Album[] }, 300, q) as { tracks: Track[]; artists: Artist[]; albums: Album[] };
+        }
+
+        // If a shorter cached query is a prefix of q and returned 0 results,
+        // don't bother querying Python - extensions will also be empty
+        for (const [key, val] of searchPrefixCache.entries()) {
+          if (q.startsWith(key) && val.expiry > Date.now()) {
+            const d = val.data as any;
+            const totalResults = (d?.tracks?.length || 0) + (d?.artists?.length || 0);
+            if (totalResults === 0) {
+              // Parent query had no results, this extension likely won't either
+              return withMaxDuration({ tracks: [], artists: [], albums: [] }, 300, q) as { tracks: Track[]; artists: Artist[]; albums: Album[] };
+            }
           }
         }
 
@@ -398,7 +431,7 @@ export const appRouter = router({
         } catch (_) {}
 
         // Trim prefix cache if too large
-        if (searchPrefixCache.size > 200) {
+        if (searchPrefixCache.size > 400) {
           const firstKey = searchPrefixCache.keys().next().value;
           if (firstKey) searchPrefixCache.delete(firstKey);
         }
@@ -410,7 +443,7 @@ export const appRouter = router({
     searchSuggestionsFast: publicProcedure
       .input(z.object({ query: z.string().min(1) }))
       .query(async ({ input }) => {
-        const result = await callPython("search_suggestions_fast", { query: input.query }, 2 * 60 * 1000) as { suggestions: string[] };
+        const result = await callPython("search_suggestions_fast", { query: input.query }, 10 * 60 * 1000) as { suggestions: string[] };
         return result;
       }),
 
@@ -1023,7 +1056,7 @@ export const appRouter = router({
     sharePlaylist: protectedProcedure
       .input(z.object({ playlistId: z.number() }))
       .mutation(async ({ input }) => {
-        const code = localDb.generateShareCode(input.playlistId);
+        const code = await db.generateShareCode(input.playlistId);
         return { code };
       }),
 
@@ -1031,20 +1064,20 @@ export const appRouter = router({
     getSharedPlaylist: publicProcedure
       .input(z.object({ code: z.string() }))
       .query(async ({ input }) => {
-        return localDb.getPlaylistByShareCode(input.code);
+        return await db.getPlaylistByShareCode(input.code);
       }),
 
     // List all shared playlists
     allSharedPlaylists: publicProcedure
       .query(async () => {
-        return localDb.getAllSharedPlaylists();
+        return await db.getAllSharedPlaylists();
       }),
 
     // Share playlist as collaborative
     shareCollaborative: protectedProcedure
       .input(z.object({ playlistId: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const code = localDb.generateCollaborativeCode(input.playlistId, ctx.user.id, ctx.user.name || "Anonimo");
+        const code = await db.generateCollaborativeCode(input.playlistId, ctx.user.id, ctx.user.name || "Anonimo");
         return { code };
       }),
 
@@ -1052,7 +1085,7 @@ export const appRouter = router({
     joinCollaborative: protectedProcedure
       .input(z.object({ code: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        const ok = localDb.addCollaborator(input.code, ctx.user.id);
+        const ok = await db.addCollaborator(input.code, ctx.user.id);
         if (!ok) throw new Error("Codice non valido o playlist non collaborativa");
         return { success: true };
       }),
@@ -1069,7 +1102,7 @@ export const appRouter = router({
         trackDuration: z.number().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const result = localDb.addTrackToCollaborativePlaylist(
+        const result = await db.addTrackToCollaborativePlaylist(
           input.code,
           {
             trackId: input.trackId,
@@ -1090,7 +1123,7 @@ export const appRouter = router({
     removeTrackFromCollaborative: protectedProcedure
       .input(z.object({ code: z.string(), trackId: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        const ok = localDb.removeTrackFromCollaborativePlaylist(input.code, input.trackId, ctx.user.id);
+        const ok = await db.removeTrackFromCollaborativePlaylist(input.code, input.trackId, ctx.user.id);
         if (!ok) throw new Error("Non puoi rimuovere brani da questa playlist");
         return { success: true };
       }),
@@ -1104,7 +1137,7 @@ export const appRouter = router({
         durationMinutes: z.number().min(10).max(120),
       }))
       .mutation(async ({ ctx, input }) => {
-        return localDb.createJamSession(
+        return await db.createJamSession(
           ctx.user.id,
           ctx.user.name || "Anonimo",
           input.name,
@@ -1115,7 +1148,7 @@ export const appRouter = router({
     join: protectedProcedure
       .input(z.object({ code: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        const session = localDb.joinJamSession(
+        const session = await db.joinJamSession(
           input.code,
           ctx.user.id,
           ctx.user.name || "Anonimo"
@@ -1127,13 +1160,13 @@ export const appRouter = router({
     leave: protectedProcedure
       .input(z.object({ code: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        return localDb.leaveJamSession(input.code, ctx.user.id);
+        return await db.leaveJamSession(input.code, ctx.user.id);
       }),
 
     start: protectedProcedure
       .input(z.object({ code: z.string() }))
       .mutation(async ({ input }) => {
-        const session = localDb.startJamSession(input.code);
+        const session = await db.startJamSession(input.code);
         if (!session) throw new Error("Impossibile avviare la JAM");
         return session;
       }),
@@ -1141,12 +1174,12 @@ export const appRouter = router({
     get: publicProcedure
       .input(z.object({ code: z.string() }))
       .query(async ({ input }) => {
-        return localDb.getJamSession(input.code);
+        return await db.getJamSession(input.code);
       }),
 
     mySessions: protectedProcedure
       .query(async ({ ctx }) => {
-        return localDb.getUserJamSessions(ctx.user.id);
+        return await db.getUserJamSessions(ctx.user.id);
       }),
 
     addTrack: protectedProcedure
@@ -1158,7 +1191,7 @@ export const appRouter = router({
         trackThumbnail: z.string(),
       }))
       .mutation(async ({ ctx, input }) => {
-        return localDb.addTrackToJamSession(
+        return await db.addTrackToJamSession(
           input.code,
           {
             trackId: input.trackId,
@@ -1173,7 +1206,7 @@ export const appRouter = router({
     end: protectedProcedure
       .input(z.object({ code: z.string() }))
       .mutation(async ({ input }) => {
-        return localDb.endJamSession(input.code);
+        return await db.endJamSession(input.code);
       }),
   }),
 
@@ -1368,8 +1401,8 @@ export const appRouter = router({
     list: protectedProcedure
       .input(z.object({ limit: z.number().default(50) }))
       .query(async ({ ctx, input }) => {
-        const notifs = socialDb.getNotifications(ctx.user.id, input.limit);
-        const unread = socialDb.getUnreadNotificationCount(ctx.user.id);
+        const notifs = await socialDb.getNotifications(ctx.user.id, input.limit);
+        const unread = await socialDb.getUnreadNotificationCount(ctx.user.id);
         return { items: notifs, unread };
       }),
 
@@ -1432,9 +1465,9 @@ export const appRouter = router({
       .input(z.object({ conversationId: z.number() }))
       .query(async ({ ctx, input }) => {
         // Verify user is in conversation
-        const conv = socialDb.getConversation(input.conversationId, ctx.user.id);
+        const conv = await socialDb.getConversation(input.conversationId, ctx.user.id);
         if (!conv) throw new Error("Conversazione non trovata");
-        return socialDb.getGroupLeaderboard(input.conversationId);
+        return await socialDb.getGroupLeaderboard(input.conversationId);
       }),
 
     myMonthlyRecap: protectedProcedure
@@ -1446,7 +1479,7 @@ export const appRouter = router({
     groupMonthlyRecap: protectedProcedure
       .input(z.object({ conversationId: z.number(), yearMonth: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const conv = socialDb.getConversation(input.conversationId, ctx.user.id);
+        const conv = await socialDb.getConversation(input.conversationId, ctx.user.id);
         if (!conv) throw new Error("Conversazione non trovata");
         return socialDb.getMonthlyRecapForGroup(input.conversationId, input.yearMonth);
       }),
@@ -1454,9 +1487,9 @@ export const appRouter = router({
     notifyGroupWinner: protectedProcedure
       .input(z.object({ conversationId: z.number(), yearMonth: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
-        const conv = socialDb.getConversation(input.conversationId, ctx.user.id);
+        const conv = await socialDb.getConversation(input.conversationId, ctx.user.id);
         if (!conv) throw new Error("Conversazione non trovata");
-        return socialDb.notifyGroupMonthlyWinner(input.conversationId, input.yearMonth);
+        return await socialDb.notifyGroupMonthlyWinner(input.conversationId, input.yearMonth);
       }),
   }),
 
@@ -1503,7 +1536,7 @@ export const appRouter = router({
         trackThumbnail: z.string(),
       }))
       .mutation(async ({ ctx, input }) => {
-        socialDb.updateListeningActivity(ctx.user.id, {
+        await socialDb.updateListeningActivity(ctx.user.id, {
           id: input.trackId,
           title: input.trackTitle,
           artist: input.trackArtist,
@@ -1520,7 +1553,7 @@ export const appRouter = router({
 
     clearListeningActivity: protectedProcedure
       .mutation(async ({ ctx }) => {
-        socialDb.clearListeningActivity(ctx.user.id);
+        await socialDb.clearListeningActivity(ctx.user.id);
         broadcastActivity(ctx.user.id, null);
         return { success: true };
       }),
@@ -1555,27 +1588,26 @@ export const appRouter = router({
         trackThumbnail: z.string(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const session = socialDb.createListenTogetherSession(ctx.user.id, {
+        const session = await socialDb.createListenTogetherSession(ctx.user.id, {
           id: input.trackId,
           title: input.trackTitle,
           artist: input.trackArtist,
           thumbnail: input.trackThumbnail,
         });
-        // Return formatted session via get
-        return socialDb.getListenTogetherSession(session.code);
+        return await socialDb.getListenTogetherSession(session.code);
       }),
 
     join: protectedProcedure
       .input(z.object({ code: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        socialDb.joinListenTogetherSession(input.code, ctx.user.id);
-        return socialDb.getListenTogetherSession(input.code);
+        await socialDb.joinListenTogetherSession(input.code, ctx.user.id);
+        return await socialDb.getListenTogetherSession(input.code);
       }),
 
     leave: protectedProcedure
       .input(z.object({ code: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        socialDb.leaveListenTogetherSession(input.code, ctx.user.id);
+        await socialDb.leaveListenTogetherSession(input.code, ctx.user.id);
         return { success: true };
       }),
 
