@@ -19,32 +19,42 @@ import pool from "./_core/pg";
 import { spawn, execFileSync } from "child_process";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-let YT_DLP_PATH = "yt-dlp";
-try {
-  execFileSync("yt-dlp", ["--version"], { timeout: 5000, stdio: "ignore" });
-} catch {
-  try {
-    const pyScripts = path.join(process.env.APPDATA || "", "Python", "Python313", "Scripts", "yt-dlp.exe");
-    if (fs.existsSync(pyScripts)) { YT_DLP_PATH = pyScripts; }
-    else {
-      const alt = path.join(process.env.APPDATA || "", "Python", "Python312", "Scripts", "yt-dlp.exe");
-      if (fs.existsSync(alt)) { YT_DLP_PATH = alt; }
-    }
-  } catch {}
-  // Fallback: try python3/python -m yt_dlp
-  if (YT_DLP_PATH === "yt-dlp") {
-    for (const pyBin of ["python3", "python"]) {
-      try {
-        execFileSync(pyBin, ["-m", "yt_dlp", "--version"], { timeout: 5000, stdio: "ignore" });
-        YT_DLP_PATH = "PYTHON_YT_DLP";
-        break;
-      } catch {}
-    }
+let YT_DLP_PATH = "";
+const YT_DLP_CANDIDATES: string[] = [];
+if (process.platform === "win32") {
+  for (const ver of ["313", "312", "311", "310"]) {
+    YT_DLP_CANDIDATES.push(path.join(process.env.APPDATA || "", "Python", `Python${ver}`, "Scripts", "yt-dlp.exe"));
   }
+}
+YT_DLP_CANDIDATES.push(
+  path.join(os.homedir(), ".local", "bin", "yt-dlp"),
+  "/usr/local/bin/yt-dlp",
+  "/usr/bin/yt-dlp",
+  "yt-dlp",
+);
+for (const cand of YT_DLP_CANDIDATES) {
+  try {
+    execFileSync(cand, ["--version"], { timeout: 5000, stdio: "ignore" });
+    YT_DLP_PATH = cand;
+    break;
+  } catch {}
+}
+if (!YT_DLP_PATH) {
+  for (const pyBin of ["python3", "python"]) {
+    try {
+      execFileSync(pyBin, ["-m", "yt_dlp", "--version"], { timeout: 5000, stdio: "ignore" });
+      YT_DLP_PATH = "PYTHON_YT_DLP";
+      break;
+    } catch {}
+  }
+}
+if (!YT_DLP_PATH) {
+  console.warn("[yt-dlp] No yt-dlp found, audio features disabled");
 }
 const PYTHON_SCRIPT = path.join(__dirname, "../ytmusic_api.py");
 
