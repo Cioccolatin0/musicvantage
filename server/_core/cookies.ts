@@ -5,10 +5,13 @@ import type { Request } from "express";
 
 export function getSessionCookieOptions(req: Request) {
   const isSecure = req.secure || req.headers["x-forwarded-proto"] === "https";
+  const origin = req.headers.origin || "";
+  const selfHost = req.headers.host || "";
+  const isCrossOrigin = origin && !origin.includes(selfHost);
   return {
     httpOnly: true,
     secure: isSecure,
-    sameSite: "lax" as const,
+    sameSite: isCrossOrigin ? "none" as const : "lax" as const,
     path: "/",
     maxAge: 30 * 24 * 60 * 60 * 1000,
   };

@@ -2,6 +2,7 @@ import express from "express";
 import crypto from "crypto";
 import { upsertUser } from "../db";
 import { COOKIE_NAME } from "@shared/const";
+import { getSessionCookieOptions } from "./_core/cookies";
 
 const MANUS_CLIENT_ID = process.env.MANUS_CLIENT_ID || "";
 const MANUS_CLIENT_SECRET = process.env.MANUS_CLIENT_SECRET || "";
@@ -9,16 +10,10 @@ const MANUS_AUTH_URL = process.env.MANUS_AUTH_URL || "https://manus.im/oauth/aut
 const MANUS_TOKEN_URL = process.env.MANUS_TOKEN_URL || "https://manus.im/oauth/token";
 const MANUS_USERINFO_URL = process.env.MANUS_USERINFO_URL || "https://manus.im/oauth/userinfo";
 const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
+const FRONTEND_URL = process.env.FRONTEND_URL || "";
 
-function getSessionCookieOptions(req: express.Request) {
-  const isProd = process.env.NODE_ENV === "production";
-  return {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: "lax" as const,
-    path: "/",
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-  };
+function frontendRedirect(path: string) {
+  return FRONTEND_URL ? `${FRONTEND_URL}${path}` : path;
 }
 
 function generateState(): string {
@@ -67,18 +62,18 @@ export function registerOAuthRoutes(app: express.Express) {
     const { code, state, error } = req.query as Record<string, string>;
 
     if (error) {
-      res.redirect(`/404?error=${encodeURIComponent(error)}`);
+      res.redirect(frontendRedirect(`/404?error=${encodeURIComponent(error)}`));
       return;
     }
 
     if (!code || !state) {
-      res.redirect("/404?error=missing_code_or_state");
+      res.redirect(frontendRedirect("/404?error=missing_code_or_state"));
       return;
     }
 
     // Validate state (CSRF protection)
     if (!pendingStates.has(state)) {
-      res.redirect("/404?error=invalid_state");
+      res.redirect(frontendRedirect("/404?error=invalid_state"));
       return;
     }
     pendingStates.delete(state);
@@ -100,7 +95,7 @@ export function registerOAuthRoutes(app: express.Express) {
       if (!tokenRes.ok) {
         const body = await tokenRes.text();
         console.error("[OAuth] Token exchange failed:", tokenRes.status, body);
-        res.redirect("/404?error=token_exchange_failed");
+        res.redirect(frontendRedirect("/404?error=token_exchange_failed"));
         return;
       }
 
@@ -116,7 +111,7 @@ export function registerOAuthRoutes(app: express.Express) {
 
       if (!userInfoRes.ok) {
         console.error("[OAuth] User info fetch failed:", userInfoRes.status);
-        res.redirect("/404?error=userinfo_failed");
+        res.redirect(frontendRedirect("/404?error=userinfo_failed"));
         return;
       }
 
@@ -157,10 +152,10 @@ export function registerOAuthRoutes(app: express.Express) {
       res.cookie(COOKIE_NAME, sessionPayload, cookieOptions);
 
       // Redirect to home page
-      res.redirect("/");
+      res.redirect(frontendRedirect("/"));
     } catch (err) {
       console.error("[OAuth] Callback error:", err);
-      res.redirect("/404?error=internal_error");
+      res.redirect(frontendRedirect("/404?error=internal_error"));
     }
   });
 
