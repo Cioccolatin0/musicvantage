@@ -257,6 +257,7 @@ async function startServer() {
   // Detect cookies.txt file for YouTube auth
   const COOKIES_PATHS = [
     path.join(process.cwd(), "cookies.txt"),
+    path.join(process.env.HOME || process.env.USERPROFILE || "", "cookies.txt"),
     path.join(process.env.USERPROFILE || "", "cookies.txt"),
     path.join(process.env.USERPROFILE || "", "Desktop", "cookies.txt"),
   ];
