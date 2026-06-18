@@ -17,11 +17,14 @@ RUN apt-get update && apt-get install -y \
     && pip3 install --break-system-packages ytmusicapi yt-dlp
 
 RUN useradd -m -u 1001 user
+
 WORKDIR /app
 
 COPY --chown=user package*.json ./
+USER user
 RUN npm ci --omit=dev
 
+USER root
 COPY --chown=user server/ ./server/
 COPY --chown=user shared/ ./shared/
 COPY --chown=user drizzle/ ./drizzle/
@@ -33,7 +36,7 @@ COPY --chown=user ytmusic_api.py ./
 COPY --chown=user public/ ./public/
 COPY --from=builder --chown=user /app/dist ./dist/
 
-RUN mkdir -p /app/logs && chown -R user:user /app/logs
+RUN chown -R user:user /app
 
 USER user
 
