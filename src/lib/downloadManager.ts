@@ -164,7 +164,7 @@ export async function downloadTrack(
   },
   onProgress?: (pct: number) => void
 ): Promise<void> {
-  const response = await fetch(`/api/audio-proxy/${track.id}`);
+  const response = await fetch(`${import.meta.env.VITE_API_URL || ""}/api/audio-proxy/${track.id}`);
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new Error(text || "Impossibile scaricare il brano");

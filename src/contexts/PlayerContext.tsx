@@ -59,7 +59,7 @@ type PlayerActions = {
 const PlayerContext = createContext<(PlayerState & PlayerActions) | null>(null);
 
 function audioProxyUrl(trackId: string): string {
-  return `/api/audio-proxy/${trackId}`;
+  return `${import.meta.env.VITE_API_URL || ""}/api/audio-proxy/${trackId}`;
 }
 
 let audioUrlCache = new Map<string, string>();
@@ -67,7 +67,7 @@ let audioUrlCache = new Map<string, string>();
 async function resolveTrackUrl(trackId: string): Promise<string> {
   const cached = audioUrlCache.get(trackId);
   if (cached) return cached;
-  const res = await fetch(`/api/audio-url/${trackId}`);
+  const res = await fetch(`${import.meta.env.VITE_API_URL || ""}/api/audio-url/${trackId}`);
   if (!res.ok) return audioProxyUrl(trackId);
   const data = await res.json();
   if (data.url) {

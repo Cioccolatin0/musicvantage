@@ -8,7 +8,7 @@ import type { Track } from "@shared/types";
 const client = createTRPCClient<AppRouter>({
   links: [
     httpBatchLink({
-      url: "/api/trpc",
+      url: `${import.meta.env.VITE_API_URL || ""}/api/trpc`,
       transformer: superjson,
       fetch(input, init) {
         return globalThis.fetch(input, {

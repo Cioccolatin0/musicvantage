@@ -70,6 +70,22 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   app.use(cookieParser());
 
+  // CORS for cross-origin requests (Vercel frontend -> HF backend)
+  app.use((_req, res, next) => {
+    const origin = _req.headers.origin;
+    if (origin) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+    }
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+    if (_req.method === "OPTIONS") {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
   // Health check endpoint (for keep-alive pings)
   app.get("/health", (_req, res) => {
     res.status(200).json({ status: "ok", uptime: process.uptime() });

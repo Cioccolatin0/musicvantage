@@ -12,7 +12,10 @@ export function useFriendActivityWs() {
     if (!user || wsRef.current) return;
 
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${window.location.host}/ws?userId=${user.id}`;
+    const wsHost = import.meta.env.VITE_API_URL
+      ? new URL(import.meta.env.VITE_API_URL).host
+      : window.location.host;
+    const url = `${proto}//${wsHost}/ws?userId=${user.id}`;
 
     const ws = new WebSocket(url);
     wsRef.current = ws;

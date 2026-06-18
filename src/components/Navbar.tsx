@@ -21,7 +21,7 @@ export default function Navbar() {
   const utils = trpc.useContext();
 
   const firePrefetch = useCallback((queries: string[]) => {
-    fetch("/api/trpc/music.searchPrefetch", {
+    fetch(`${import.meta.env.VITE_API_URL || ""}/api/trpc/music.searchPrefetch`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ json: { queries } }),
