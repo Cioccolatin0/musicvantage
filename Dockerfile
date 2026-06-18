@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --break-system-packages ytmusicapi yt-dlp
 
-RUN useradd -m -u 1000 user
+RUN useradd -m -u 1001 user
 WORKDIR /app
 
 COPY --chown=user package*.json ./
