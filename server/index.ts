@@ -254,6 +254,21 @@ async function startServer() {
     }
   }
 
+  // Detect cookies.txt file for YouTube auth
+  const COOKIES_PATHS = [
+    path.join(process.cwd(), "cookies.txt"),
+    path.join(process.env.USERPROFILE || "", "cookies.txt"),
+    path.join(process.env.USERPROFILE || "", "Desktop", "cookies.txt"),
+  ];
+  let YT_DLP_COOKIES: string | null = null;
+  for (const cp of COOKIES_PATHS) {
+    if (fs.existsSync(cp)) { YT_DLP_COOKIES = cp; break; }
+  }
+  if (process.env.YT_DLP_COOKIES && fs.existsSync(process.env.YT_DLP_COOKIES)) {
+    YT_DLP_COOKIES = process.env.YT_DLP_COOKIES;
+  }
+  if (YT_DLP_COOKIES) console.log(`[yt-dlp] Using cookies file: ${YT_DLP_COOKIES}`);
+
   function tryFormat(videoId: string, fmt: string, timeoutMs: number): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const baseArgs = YT_DLP_PATH === "PYTHON_YT_DLP"
@@ -263,10 +278,14 @@ async function startServer() {
         ...baseArgs,
         "--no-warnings", "--no-playlist", "--no-progress", "--quiet",
         "--extractor-retries", "3",
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "--extractor-args", "youtube:player_client=ios,web_creator,mweb,android",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
         "-f", fmt, "--get-url",
         `https://www.youtube.com/watch?v=${videoId}`
       ];
+      if (YT_DLP_COOKIES) {
+        args.push("--cookies", YT_DLP_COOKIES);
+      }
       const bin = YT_DLP_PATH === "PYTHON_YT_DLP" ? "python3" : YT_DLP_PATH;
       const proc = spawn(bin, args, {
         timeout: timeoutMs,

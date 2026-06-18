@@ -103,6 +103,17 @@ for candidate in [["yt-dlp"], [sys.executable, "-m", "yt_dlp"]]:
     except Exception:
         continue
 
+# Detect cookies.txt for YouTube auth bypass
+_YT_DLP_COOKIES = None
+for _cp in [os.path.join(os.getcwd(), "cookies.txt"),
+            os.path.join(os.path.expanduser("~"), "cookies.txt"),
+            os.path.join(os.path.expanduser("~"), "Desktop", "cookies.txt")]:
+    if os.path.exists(_cp):
+        _YT_DLP_COOKIES = _cp
+        break
+if os.environ.get("YT_DLP_COOKIES") and os.path.exists(os.environ["YT_DLP_COOKIES"]):
+    _YT_DLP_COOKIES = os.environ["YT_DLP_COOKIES"]
+
 SEARCH_TIMEOUT = 8
 
 _shared_pool = None
@@ -399,9 +410,17 @@ def get_audio_url(video_id: str):
         ["-f", "bestaudio"],
         ["-f", "worstaudio"],
     ]
+    base_flags = [
+        "--no-warnings", "--no-playlist", "--quiet",
+        "--extractor-retries", "3",
+        "--extractor-args", "youtube:player_client=ios,web_creator,mweb,android",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    ]
+    if _YT_DLP_COOKIES:
+        base_flags += ["--cookies", _YT_DLP_COOKIES]
     last_error = ""
     for fmt in format_opts:
-        cmd = YT_DLP_CMD + ["--no-warnings", "--get-url", "--no-playlist"] + fmt + [url]
+        cmd = YT_DLP_CMD + base_flags + ["--get-url"] + fmt + [url]
         for attempt in range(2):
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
