@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { getLogsHtml } from "./_core/log-buffer.js";
 import express from "express";
 import cookieParser from "cookie-parser";
 import { createServer, get as httpGet } from "http";
@@ -94,6 +95,12 @@ async function startServer() {
   // Health check endpoint (for keep-alive pings)
   app.get("/health", (_req, res) => {
     res.status(200).json({ status: "ok", uptime: process.uptime() });
+  });
+
+  // Admin logs endpoint
+  app.get("/admin/logs", (_req, res) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(getLogsHtml(200));
   });
 
   registerStorageProxy(app);
