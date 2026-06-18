@@ -278,7 +278,7 @@ async function startServer() {
         ...baseArgs,
         "--no-warnings", "--no-playlist", "--no-progress", "--quiet",
         "--extractor-retries", "3",
-        "--extractor-args", "youtube:player_client=ios,web_creator,mweb,android",
+        "--extractor-args", "youtube:player_client=tv_embedded",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
         "-f", fmt, "--get-url",
         `https://www.youtube.com/watch?v=${videoId}`
