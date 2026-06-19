@@ -56,6 +56,22 @@ if (!YT_DLP_PATH) {
 if (!YT_DLP_PATH) {
   console.warn("[yt-dlp] No yt-dlp found, audio features disabled");
 }
+
+let _ytdlpUpdated = false;
+async function ensureYtDlpUpdated(): Promise<void> {
+  if (_ytdlpUpdated) return;
+  _ytdlpUpdated = true;
+  if (!YT_DLP_PATH || YT_DLP_PATH === "PYTHON_YT_DLP") return;
+  try {
+    console.log("[yt-dlp] Checking for updates...");
+    execFileSync(YT_DLP_PATH, ["--update", "--no-restart"], { timeout: 30000, stdio: "ignore" });
+    console.log("[yt-dlp] Update check complete");
+  } catch {
+    try {
+      execFileSync(YT_DLP_PATH, ["-U", "--no-restart"], { timeout: 30000, stdio: "ignore" });
+    } catch {}
+  }
+}
 const PYTHON_SCRIPT = path.join(__dirname, "../ytmusic_api.py");
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -78,6 +94,7 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  await ensureYtDlpUpdated();
   const app = express();
   const server = createServer(app);
 
@@ -268,8 +285,12 @@ async function startServer() {
   const COOKIES_PATHS = [
     path.join(process.cwd(), "cookies.txt"),
     path.join(process.env.HOME || process.env.USERPROFILE || "", "cookies.txt"),
+    path.join(process.env.HOME || "", "snap", "yt-dlp", "current", "cookies.txt"),
     path.join(process.env.USERPROFILE || "", "cookies.txt"),
     path.join(process.env.USERPROFILE || "", "Desktop", "cookies.txt"),
+    "/etc/yt-dlp/cookies.txt",
+    "/home/musicapp/cookies.txt",
+    "/home/musicapp/app/cookies.txt",
   ];
   let YT_DLP_COOKIES: string | null = null;
   for (const cp of COOKIES_PATHS) {
@@ -280,16 +301,25 @@ async function startServer() {
   }
   if (YT_DLP_COOKIES) console.log(`[yt-dlp] Using cookies file: ${YT_DLP_COOKIES}`);
 
-  function tryFormat(videoId: string, fmt: string, timeoutMs: number): Promise<string> {
+  const PLAYER_CLIENTS = [
+    "youtube:player_client=tv_embedded",
+    "youtube:player_client=android",
+    "youtube:player_client=web",
+    "youtube:player_client=tv",
+    "youtube:player_client=ios",
+  ];
+
+  function tryFormat(videoId: string, fmt: string, timeoutMs: number, clientIdx = 0): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const baseArgs = YT_DLP_PATH === "PYTHON_YT_DLP"
         ? ["-m", "yt_dlp"]
         : [];
+      const client = PLAYER_CLIENTS[clientIdx % PLAYER_CLIENTS.length];
       const args = [
         ...baseArgs,
         "--no-warnings", "--no-playlist", "--no-progress", "--quiet",
         "--extractor-retries", "3",
-        "--extractor-args", "youtube:player_client=tv_embedded",
+        "--extractor-args", client,
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
         "-f", fmt, "--get-url",
         `https://www.youtube.com/watch?v=${videoId}`
@@ -324,13 +354,17 @@ async function startServer() {
       "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio",
       "bestaudio",
       "worstaudio",
+      "bestaudio[abr>0]/bestaudio",
+      "m4a",
+      "webm",
     ];
 
     const timeoutMs = 30000;
-    const maxRetries = 2;
+    const maxRetries = 4;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      const promises = formatOpts.map(fmt => tryFormat(videoId, fmt, timeoutMs));
+      const clientIdx = (attempt - 1) % PLAYER_CLIENTS.length;
+      const promises = formatOpts.map(fmt => tryFormat(videoId, fmt, timeoutMs, clientIdx));
 
       try {
         const url = await Promise.any(promises);
@@ -339,7 +373,7 @@ async function startServer() {
       } catch (agg) {
         const errors = (agg as any)?.errors || [agg];
         const messages = errors.map((e: any) => e?.message?.slice(0, 100) || String(e)).join("; ");
-        console.error(`[AudioProxy] Attempt ${attempt}/${maxRetries} failed for ${videoId}: ${messages}`);
+        console.error(`[AudioProxy] Attempt ${attempt}/${maxRetries} (client=${PLAYER_CLIENTS[clientIdx]}) failed for ${videoId}: ${messages}`);
         if (attempt < maxRetries) {
           await new Promise(r => setTimeout(r, 2000 * attempt));
         }
@@ -357,43 +391,73 @@ async function startServer() {
       return;
     }
 
-    try {
-      const url = await resolveAudioUrl(videoId);
-
-      const reqOpts = { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" } };
-
-      function streamUpstream(sourceUrl: string, redirectCount = 0) {
-        if (redirectCount > 5) {
-          if (!res.headersSent) res.status(502).json({ error: "Troppi reindirizzamenti" });
-          return;
-        }
-        const client = sourceUrl.startsWith("https") ? httpsGet : httpGet;
-        client(sourceUrl, reqOpts, (upstream) => {
-          if (upstream.statusCode && upstream.statusCode >= 300 && upstream.statusCode < 400 && upstream.headers.location) {
-            streamUpstream(upstream.headers.location, redirectCount + 1);
-            return;
-          }
-          if (!upstream.statusCode || upstream.statusCode >= 400) {
-            console.error(`[AudioProxy] Upstream ${upstream.statusCode} for ${videoId}`);
-            if (!res.headersSent) res.status(502).json({ error: "Impossibile riprodurre questo brano" });
-            return;
-          }
-          res.writeHead(upstream.statusCode, {
-            "Content-Type": upstream.headers["content-type"] || "audio/webm",
-            "Content-Length": upstream.headers["content-length"] || undefined,
-            "Accept-Ranges": "bytes",
-            "Access-Control-Allow-Origin": "*",
-          });
-          upstream.pipe(res);
-        }).on("error", (err) => {
-          console.error(`[AudioProxy] Stream error for ${videoId}:`, err.message);
-          if (!res.headersSent) res.status(502).json({ error: "Impossibile riprodurre questo brano" });
-        });
+    async function tryResolveAndStream(): Promise<boolean> {
+      let url: string;
+      try {
+        url = await resolveAudioUrl(videoId);
+      } catch {
+        return false;
       }
 
-      streamUpstream(url);
-    } catch (err) {
-      console.error(`[AudioProxy] Failed for ${videoId}:`, (err as Error).message);
+      const reqOpts = {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        },
+        timeout: 30000,
+      };
+
+      return new Promise<boolean>((resolve) => {
+        function streamUpstream(sourceUrl: string, redirectCount = 0) {
+          if (redirectCount > 5) {
+            if (!res.headersSent) { res.status(502).json({ error: "Troppi reindirizzamenti" }); resolve(false); }
+            return;
+          }
+          const client = sourceUrl.startsWith("https") ? httpsGet : httpGet;
+          const upstreamReq = client(sourceUrl, reqOpts, (upstream) => {
+            if (upstream.statusCode && upstream.statusCode >= 300 && upstream.statusCode < 400 && upstream.headers.location) {
+              streamUpstream(upstream.headers.location, redirectCount + 1);
+              return;
+            }
+            if (!upstream.statusCode || upstream.statusCode >= 400) {
+              console.error(`[AudioProxy] Upstream ${upstream.statusCode} for ${videoId}`);
+              if (!res.headersSent) { res.status(502).json({ error: "Impossibile riprodurre questo brano" }); resolve(false); }
+              return;
+            }
+            const contentType = upstream.headers["content-type"] || "audio/webm";
+            res.writeHead(upstream.statusCode, {
+              "Content-Type": contentType,
+              "Content-Length": upstream.headers["content-length"] || undefined,
+              "Accept-Ranges": "bytes",
+              "Access-Control-Allow-Origin": "*",
+              "Cache-Control": "public, max-age=3600",
+            });
+            upstream.pipe(res);
+            resolve(true);
+          });
+          upstreamReq.on("error", (err: Error) => {
+            console.error(`[AudioProxy] Stream error for ${videoId}:`, err.message);
+            if (!res.headersSent) { res.status(502).json({ error: "Impossibile riprodurre questo brano" }); resolve(false); }
+          });
+          upstreamReq.setTimeout(30000, () => {
+            upstreamReq.destroy();
+            if (!res.headersSent) { res.status(502).json({ error: "Timeout upstream" }); resolve(false); }
+          });
+        }
+        streamUpstream(url);
+      });
+    }
+
+    // Try Node.js yt-dlp first, then fallback to Python worker
+    const ok = await tryResolveAndStream();
+    if (!ok && !res.headersSent) {
+      try {
+        const result = await callPythonWorker("audio_url", { videoId }, 0) as { url: string };
+        if (result?.url) {
+          // Redirect client to the direct URL (or stream it through)
+          res.redirect(result.url);
+          return;
+        }
+      } catch {}
       if (!res.headersSent) res.status(502).json({ error: "Impossibile riprodurre questo brano" });
     }
   });
