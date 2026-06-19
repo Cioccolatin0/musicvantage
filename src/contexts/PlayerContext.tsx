@@ -68,13 +68,13 @@ async function resolveTrackUrl(trackId: string): Promise<string> {
   const cached = audioUrlCache.get(trackId);
   if (cached) return cached;
   const res = await fetch(`${import.meta.env.VITE_API_URL || ""}/api/audio-url/${trackId}`);
-  if (!res.ok) return audioProxyUrl(trackId);
+  if (!res.ok) throw new Error(`Failed to resolve URL for ${trackId}`);
   const data = await res.json();
   if (data.url) {
     audioUrlCache.set(trackId, data.url);
     return data.url;
   }
-  return audioProxyUrl(trackId);
+  throw new Error(`No URL returned for ${trackId}`);
 }
 
 function prefetchAudioUrls(trackIds: string[]) {
@@ -257,33 +257,18 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       applySrc(cached);
       isPlayingRef.current = true;
     } else {
-      // Try to resolve the URL first (with short timeout) before falling back to proxy
+      // Wait for URL resolution (yt-dlp needs a few seconds), no proxy fallback
       isPlayingRef.current = true;
-      const resolvePromise = resolveTrackUrl(trackId);
-      const timeoutPromise = new Promise<string>((_, reject) =>
-        setTimeout(() => reject(new Error("timeout")), 1500)
-      );
-      Promise.race([resolvePromise, timeoutPromise])
-        .then((resolved) => {
-          if (currentTrackIdRef.current === trackId) {
-            applySrc(resolved);
-          }
-        })
-        .catch(() => {
-          // Fallback to proxy if resolution times out or fails
-          if (currentTrackIdRef.current === trackId) {
-            applySrc(audioProxyUrl(trackId));
-          }
-          // Still try to resolve in background and swap later
-          resolvePromise.then((resolved) => {
-            if (currentTrackIdRef.current === trackId && audio.src !== resolved) {
-              const pos = audio.currentTime;
-              audio.src = resolved;
-              audio.currentTime = pos;
-              audio.play().catch(() => {});
-            }
-          }).catch(() => {});
-        });
+      resolveTrackUrl(trackId).then((resolved) => {
+        if (currentTrackIdRef.current === trackId) {
+          applySrc(resolved);
+        }
+      }).catch(() => {
+        // Last resort: use proxy
+        if (currentTrackIdRef.current === trackId) {
+          applySrc(audioProxyUrl(trackId));
+        }
+      });
     }
 
     const s = stateRef.current;
