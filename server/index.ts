@@ -399,12 +399,18 @@ async function startServer() {
         return false;
       }
 
-      const reqOpts = {
+      const rangeHeader = req.headers.range;
+      const reqOpts: any = {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+          "Referer": "https://www.youtube.com/",
+          "Origin": "https://www.youtube.com",
         },
         timeout: 30000,
       };
+      if (rangeHeader) {
+        reqOpts.headers["Range"] = rangeHeader;
+      }
 
       return new Promise<boolean>((resolve) => {
         function streamUpstream(sourceUrl: string, redirectCount = 0) {
@@ -424,13 +430,17 @@ async function startServer() {
               return;
             }
             const contentType = upstream.headers["content-type"] || "audio/webm";
-            res.writeHead(upstream.statusCode, {
+            const responseHeaders: Record<string, string | number | undefined> = {
               "Content-Type": contentType,
               "Content-Length": upstream.headers["content-length"] || undefined,
               "Accept-Ranges": "bytes",
               "Access-Control-Allow-Origin": "*",
               "Cache-Control": "public, max-age=3600",
-            });
+            };
+            if (upstream.headers["content-range"]) {
+              responseHeaders["Content-Range"] = upstream.headers["content-range"];
+            }
+            res.writeHead(upstream.statusCode, responseHeaders);
             upstream.pipe(res);
             resolve(true);
           });

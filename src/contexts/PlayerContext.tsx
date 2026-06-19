@@ -246,7 +246,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       isPlayingRef.current = true;
       preloadedTrackId = null;
       preloadAudio = null;
-      // Still prefetch upcoming tracks
       const s = stateRef.current;
       const upcoming = s.queue.slice(s.queueIndex + 1, s.queueIndex + 6).map((t) => t.id);
       if (upcoming.length > 0) prefetchAudioUrls(upcoming);
@@ -258,16 +257,33 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       applySrc(cached);
       isPlayingRef.current = true;
     } else {
-      applySrc(audioProxyUrl(trackId));
+      // Try to resolve the URL first (with short timeout) before falling back to proxy
       isPlayingRef.current = true;
-      resolveTrackUrl(trackId).then((resolved) => {
-        if (currentTrackIdRef.current === trackId && audio.src !== resolved) {
-          const pos = audio.currentTime;
-          audio.src = resolved;
-          audio.currentTime = pos;
-          audio.play().catch(() => {});
-        }
-      }).catch(() => {});
+      const resolvePromise = resolveTrackUrl(trackId);
+      const timeoutPromise = new Promise<string>((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), 1500)
+      );
+      Promise.race([resolvePromise, timeoutPromise])
+        .then((resolved) => {
+          if (currentTrackIdRef.current === trackId) {
+            applySrc(resolved);
+          }
+        })
+        .catch(() => {
+          // Fallback to proxy if resolution times out or fails
+          if (currentTrackIdRef.current === trackId) {
+            applySrc(audioProxyUrl(trackId));
+          }
+          // Still try to resolve in background and swap later
+          resolvePromise.then((resolved) => {
+            if (currentTrackIdRef.current === trackId && audio.src !== resolved) {
+              const pos = audio.currentTime;
+              audio.src = resolved;
+              audio.currentTime = pos;
+              audio.play().catch(() => {});
+            }
+          }).catch(() => {});
+        });
     }
 
     const s = stateRef.current;
@@ -513,6 +529,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           currentTime: 0,
         });
       }
+      // Pre-resolve track URL early so loadAudioTrack can use cache
+      resolveTrackUrl(track.id).catch(() => {});
       loadAudioTrack(track.id);
     },
     [utils, updateState, reportListening, updateActivity, updateTogetherTrack, loadAudioTrack]
