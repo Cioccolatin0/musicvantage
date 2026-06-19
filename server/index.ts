@@ -309,6 +309,19 @@ async function startServer() {
     "youtube:player_client=ios",
   ];
 
+  // Semaphore: max 1 yt-dlp process at a time to prevent OOM
+  let _ytdlpActive = 0;
+  const _ytdlpQueue: (() => void)[] = [];
+  function acquireYtDlpSlot(): Promise<void> {
+    if (_ytdlpActive < 1) { _ytdlpActive++; return Promise.resolve(); }
+    return new Promise(r => _ytdlpQueue.push(() => { _ytdlpActive++; r(); }));
+  }
+  function releaseYtDlpSlot() {
+    _ytdlpActive--;
+    const next = _ytdlpQueue.shift();
+    if (next) setImmediate(next);
+  }
+
   function tryFormat(videoId: string, fmt: string, timeoutMs: number, clientIdx = 0): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const baseArgs = YT_DLP_PATH === "PYTHON_YT_DLP"
@@ -353,31 +366,30 @@ async function startServer() {
     const formatOpts = [
       "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio",
       "bestaudio",
-      "worstaudio",
-      "bestaudio[abr>0]/bestaudio",
-      "m4a",
-      "webm",
     ];
 
     const timeoutMs = 30000;
-    const maxRetries = 4;
+    const maxRetries = 2;
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      const clientIdx = (attempt - 1) % PLAYER_CLIENTS.length;
-      const promises = formatOpts.map(fmt => tryFormat(videoId, fmt, timeoutMs, clientIdx));
-
-      try {
-        const url = await Promise.any(promises);
-        cacheAudioUrl(videoId, url);
-        return url;
-      } catch (agg) {
-        const errors = (agg as any)?.errors || [agg];
-        const messages = errors.map((e: any) => e?.message?.slice(0, 100) || String(e)).join("; ");
-        console.error(`[AudioProxy] Attempt ${attempt}/${maxRetries} (client=${PLAYER_CLIENTS[clientIdx]}) failed for ${videoId}: ${messages}`);
+    await acquireYtDlpSlot();
+    try {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        const clientIdx = (attempt - 1) % PLAYER_CLIENTS.length;
+        for (const fmt of formatOpts) {
+          try {
+            const url = await tryFormat(videoId, fmt, timeoutMs, clientIdx);
+            cacheAudioUrl(videoId, url);
+            return url;
+          } catch (err: any) {
+            console.error(`[AudioProxy] Attempt ${attempt}/${maxRetries} fmt=${fmt} client=${PLAYER_CLIENTS[clientIdx]} failed for ${videoId}: ${err?.message?.slice(0, 100) || err}`);
+          }
+        }
         if (attempt < maxRetries) {
           await new Promise(r => setTimeout(r, 2000 * attempt));
         }
       }
+    } finally {
+      releaseYtDlpSlot();
     }
 
     throw new Error("Failed to resolve audio URL after retries");
@@ -503,8 +515,10 @@ async function startServer() {
       return;
     }
     res.json({ ok: true });
-    const valid = ids.filter((id: string) => typeof id === "string" && /^[a-zA-Z0-9_-]{1,20}$/.test(id)).slice(0, 30);
-    await Promise.allSettled(valid.map((id: string) => resolveAudioUrl(id).catch(() => {})));
+    const valid = ids.filter((id: string) => typeof id === "string" && /^[a-zA-Z0-9_-]{1,20}$/.test(id)).slice(0, 20);
+    for (const id of valid) {
+      await resolveAudioUrl(id).catch(() => {});
+    }
   });
 
   // Audio stream proxy endpoint - uses yt-dlp to get audio URL server-side

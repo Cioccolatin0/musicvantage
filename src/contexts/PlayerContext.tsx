@@ -247,7 +247,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       preloadedTrackId = null;
       preloadAudio = null;
       const s = stateRef.current;
-      const upcoming = s.queue.slice(s.queueIndex + 1, s.queueIndex + 6).map((t) => t.id);
+    const upcoming = s.queue.slice(s.queueIndex + 1, s.queueIndex + 3).map((t) => t.id);
       if (upcoming.length > 0) prefetchAudioUrls(upcoming);
       return;
     }
