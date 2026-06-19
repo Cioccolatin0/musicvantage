@@ -518,12 +518,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         playerVars: {
           autoplay: 0, controls: 0, disablekb: 1, fs: 0,
           iv_load_policy: 3, modestbranding: 1, rel: 0, showinfo: 0,
+          origin: window.location.origin,
         },
         events: {
-          onReady: () => {
+          onReady: (event: any) => {
             if (destroyed) return;
             isPlayerReadyRef.current = true;
-            playerRef.current = playerRef.current;
+            playerRef.current = event.target;
             if (pendingTrackRef.current) {
               loadYtTrack(pendingTrackRef.current);
               pendingTrackRef.current = null;
