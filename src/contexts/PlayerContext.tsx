@@ -257,23 +257,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       applySrc(cached);
       isPlayingRef.current = true;
     } else {
-      // Wait for URL resolution (yt-dlp needs a few seconds), no proxy fallback
+      // Always use proxy URL - direct URLs don't work (YouTube validates IP)
       isPlayingRef.current = true;
-      resolveTrackUrl(trackId).then((resolved) => {
-        if (currentTrackIdRef.current === trackId) {
-          applySrc(resolved);
-        }
-      }).catch(() => {
-        // Last resort: use proxy
-        if (currentTrackIdRef.current === trackId) {
-          applySrc(audioProxyUrl(trackId));
-        }
-      });
+      applySrc(audioProxyUrl(trackId));
     }
 
     const s = stateRef.current;
-    const upcoming = s.queue.slice(s.queueIndex + 1, s.queueIndex + 6).map((t) => t.id);
-    if (upcoming.length > 0) prefetchAudioUrls(upcoming);
+    // No prefetch - direct URLs don't work, proxy handles each track on demand
   }, []);
 
   // Initialize audio element ONCE - never re-run

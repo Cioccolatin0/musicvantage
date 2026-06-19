@@ -413,60 +413,53 @@ async function startServer() {
       }
 
       const rangeHeader = req.headers.range;
-      const reqOpts: any = {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-          "Referer": "https://www.youtube.com/",
-          "Origin": "https://www.youtube.com",
-        },
-        timeout: 30000,
-      };
+      const args = [
+        "--socks5-hostname", "127.0.0.1:9050",
+        "-s", "-L",
+        "-H", "Referer: https://www.youtube.com/",
+        "-H", "Origin: https://www.youtube.com",
+        "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+      ];
       if (rangeHeader) {
-        reqOpts.headers["Range"] = rangeHeader;
+        args.push("-H", `Range: ${rangeHeader}`);
       }
+      args.push(url);
 
       return new Promise<boolean>((resolve) => {
-        function streamUpstream(sourceUrl: string, redirectCount = 0) {
-          if (redirectCount > 5) {
-            if (!res.headersSent) { res.status(502).json({ error: "Troppi reindirizzamenti" }); resolve(false); }
-            return;
-          }
-          const client = sourceUrl.startsWith("https") ? httpsGet : httpGet;
-          const upstreamReq = client(sourceUrl, reqOpts, (upstream) => {
-            if (upstream.statusCode && upstream.statusCode >= 300 && upstream.statusCode < 400 && upstream.headers.location) {
-              streamUpstream(upstream.headers.location, redirectCount + 1);
-              return;
-            }
-            if (!upstream.statusCode || upstream.statusCode >= 400) {
-              console.error(`[AudioProxy] Upstream ${upstream.statusCode} for ${videoId}`);
-              if (!res.headersSent) { res.status(502).json({ error: "Impossibile riprodurre questo brano" }); resolve(false); }
-              return;
-            }
-            const contentType = upstream.headers["content-type"] || "audio/webm";
-            const responseHeaders: Record<string, string | number | undefined> = {
-              "Content-Type": contentType,
-              "Content-Length": upstream.headers["content-length"] || undefined,
+        const proc = spawn("curl", args, { timeout: 30000 });
+        let started = false;
+
+        proc.stdout.on("data", (chunk: Buffer) => {
+          if (!started) {
+            started = true;
+            res.writeHead(206, {
+              "Content-Type": "audio/webm",
               "Accept-Ranges": "bytes",
               "Access-Control-Allow-Origin": "*",
               "Cache-Control": "public, max-age=3600",
-            };
-            if (upstream.headers["content-range"]) {
-              responseHeaders["Content-Range"] = upstream.headers["content-range"];
-            }
-            res.writeHead(upstream.statusCode, responseHeaders);
-            upstream.pipe(res);
+            });
+          }
+          res.write(chunk);
+        });
+
+        proc.on("close", (code) => {
+          if (!started) {
+            console.error(`[AudioProxy] curl exited ${code} for ${videoId}`);
+            if (!res.headersSent) { res.status(502).json({ error: "Impossibile riprodurre questo brano" }); }
+            resolve(false);
+          } else {
+            res.end();
             resolve(true);
-          });
-          upstreamReq.on("error", (err: Error) => {
-            console.error(`[AudioProxy] Stream error for ${videoId}:`, err.message);
-            if (!res.headersSent) { res.status(502).json({ error: "Impossibile riprodurre questo brano" }); resolve(false); }
-          });
-          upstreamReq.setTimeout(30000, () => {
-            upstreamReq.destroy();
-            if (!res.headersSent) { res.status(502).json({ error: "Timeout upstream" }); resolve(false); }
-          });
-        }
-        streamUpstream(url);
+          }
+        });
+
+        proc.on("error", (err) => {
+          console.error(`[AudioProxy] curl error for ${videoId}:`, err.message);
+          if (!res.headersSent) { res.status(502).json({ error: "Impossibile riprodurre questo brano" }); }
+          resolve(false);
+        });
+
+        req.on("close", () => { try { proc.kill(); } catch {} });
       });
     }
 
