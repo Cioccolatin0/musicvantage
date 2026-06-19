@@ -331,7 +331,6 @@ async function startServer() {
       const args = [
         ...baseArgs,
         "--no-warnings", "--no-playlist", "--no-progress", "--quiet",
-        "--proxy", "socks5://127.0.0.1:9050",
         "--extractor-retries", "3",
         "--extractor-args", client,
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
@@ -414,7 +413,6 @@ async function startServer() {
 
       const rangeHeader = req.headers.range;
       const args = [
-        "--socks5-hostname", "127.0.0.1:9050",
         "-s", "-L",
         "-H", "Referer: https://www.youtube.com/",
         "-H", "Origin: https://www.youtube.com",
